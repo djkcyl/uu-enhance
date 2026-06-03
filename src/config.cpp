@@ -3,8 +3,8 @@
 #include <string>
 
 namespace cfg {
-    std::atomic<bool> g_viewOnly{true};    // 默认仅浏览
-    std::atomic<bool> g_clipSync{false};   // 默认关剪贴板同步
+    std::atomic<bool> g_viewOnly{true};
+    std::atomic<bool> g_clipSync{false};
     std::atomic<bool> g_gamepadOff{false};
 
     static std::wstring iniPath() {
@@ -24,8 +24,8 @@ namespace cfg {
 
     void load() {
         auto p = iniPath();
-        g_viewOnly = GetPrivateProfileIntW(L"general", L"view_only", 1, p.c_str()) != 0;     // 默认开仅浏览
-        g_clipSync = GetPrivateProfileIntW(L"general", L"clipboard_sync", 0, p.c_str()) != 0; // 默认关剪贴板同步
+        g_viewOnly = GetPrivateProfileIntW(L"general", L"view_only", 1, p.c_str()) != 0;
+        g_clipSync = GetPrivateProfileIntW(L"general", L"clipboard_sync", 0, p.c_str()) != 0;
         g_gamepadOff = GetPrivateProfileIntW(L"general", L"gamepad_off", 0, p.c_str()) != 0;
     }
 

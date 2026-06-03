@@ -11,27 +11,22 @@
 
 #define WM_UPDATE_AVAILABLE (WM_APP + 100)
 
-// ---- 布局常量 ----
-static constexpr int BANNER_H  = 68;   // 顶部横幅高度
-static constexpr int MARGIN    = 20;   // 左右边距
-static constexpr int CW        = 520;  // 内容区宽度
+static constexpr int BANNER_H  = 68;
+static constexpr int MARGIN    = 20;
+static constexpr int CW        = 520;
 static constexpr int WIN_W     = CW + MARGIN * 2;
 static constexpr int WIN_H     = 420;
 
-// ---- 颜色 ----
 static constexpr COLORREF CLR_BANNER     = RGB(24, 90, 188);
 static constexpr COLORREF CLR_BANNER_SUB = RGB(160, 195, 240);
 static constexpr COLORREF CLR_GREEN      = RGB(22, 163, 74);
 static constexpr COLORREF CLR_GRAY       = RGB(120, 120, 120);
 
-// ---- 全局 ----
 static HWND  g_hwnd, g_path, g_log, g_state, g_pathHint, g_footer;
 static HWND  g_btnInstall, g_btnUninstall;
 static HFONT g_font, g_fontBold, g_fontTitle;
 static HBRUSH g_brushBanner;
 static std::wstring g_latestVer;
-
-// ---- 工具函数 ----
 
 static void logln(const std::wstring& s) {
     int len = GetWindowTextLengthW(g_log);
@@ -104,8 +99,6 @@ static std::wstring runningGameViewerPath() {
 
 static bool isGameViewerRunning() { return !runningGameViewerPath().empty(); }
 
-// ---- 自动查找 ----
-
 static std::wstring fromRegistry() {
     const REGSAM views[] = { KEY_WOW64_64KEY, KEY_WOW64_32KEY };
     const wchar_t* root = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall";
@@ -167,9 +160,7 @@ static std::wstring autoDetect() {
     return L"";
 }
 
-// ---- 版本比较 ----
-
-// 把 "0.1.0" 拆成整数比较。返回 -1 / 0 / 1 (a < b / a == b / a > b)
+// 返回 -1 / 0 / 1
 static int cmpVer(const std::wstring& a, const std::wstring& b) {
     auto parse = [](const std::wstring& s, int out[4]) {
         out[0] = out[1] = out[2] = out[3] = 0;
@@ -183,8 +174,6 @@ static int cmpVer(const std::wstring& a, const std::wstring& b) {
     }
     return 0;
 }
-
-// ---- 检查更新 ----
 
 static DWORD WINAPI checkUpdateThread(LPVOID param) {
     HINTERNET ses = WinHttpOpen(L"uu-enhance-installer/" UURE_VERSION_W,
@@ -230,8 +219,6 @@ static DWORD WINAPI checkUpdateThread(LPVOID param) {
     }
     return 0;
 }
-
-// ---- 状态刷新 ----
 
 static std::wstring currentBinDir() {
     int len = GetWindowTextLengthW(g_path);
@@ -292,8 +279,6 @@ static void refreshState() {
     EnableWindow(g_btnUninstall, dirOk && !installedVer.empty());
 }
 
-// ---- 释放 DLL ----
-
 static bool extractPayload(const std::wstring& dest, std::wstring& errOut) {
     HRSRC res = FindResourceW(nullptr, MAKEINTRESOURCEW(IDR_PAYLOAD_DLL), MAKEINTRESOURCEW(10));
     if (!res) { errOut = L"安装器内未找到内嵌 DLL 资源"; return false; }
@@ -317,8 +302,6 @@ static bool extractPayload(const std::wstring& dest, std::wstring& errOut) {
     if (!ok || wrote != sz) { errOut = L"写入未完成"; return false; }
     return true;
 }
-
-// ---- 安装 / 卸载 ----
 
 static void doInstall(HWND hwnd) {
     std::wstring bin = normalizeBinDir(currentBinDir());
@@ -409,8 +392,6 @@ static void doUninstall(HWND hwnd) {
     MessageBoxW(hwnd, L"已卸载，GameViewer 已恢复原状。", L"卸载完成", MB_ICONINFORMATION);
 }
 
-// ---- 浏览 ----
-
 static void doBrowse(HWND hwnd) {
     BROWSEINFOW bi{};
     bi.hwndOwner = hwnd;
@@ -432,8 +413,6 @@ static void doBrowse(HWND hwnd) {
     CoTaskMemFree(pidl);
 }
 
-// ---- 窗口过程 ----
-
 static void applyFont(HWND h) { SendMessageW(h, WM_SETFONT, (WPARAM)g_font, TRUE); }
 
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
@@ -442,7 +421,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
     case WM_CREATE: {
         int y = BANNER_H + 20;
 
-        // 安装目录
         CreateWindowExW(0, L"STATIC", L"安装目录",
             WS_CHILD | WS_VISIBLE, MARGIN, y, CW, 18, hwnd, nullptr, nullptr, nullptr);
         y += 22;
@@ -459,7 +437,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
             WS_CHILD | WS_VISIBLE, MARGIN, y, CW, 16, hwnd, (HMENU)ID_PATH_HINT, nullptr, nullptr);
         y += 26;
 
-        // 状态
         CreateWindowExW(0, L"STATIC", L"当前状态",
             WS_CHILD | WS_VISIBLE, MARGIN, y, 60, 18, hwnd, nullptr, nullptr, nullptr);
         g_state = CreateWindowExW(0, L"STATIC", L"  检测中...",
@@ -467,7 +444,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
             MARGIN + 62, y - 2, CW - 62, 22, hwnd, (HMENU)ID_STATE, nullptr, nullptr);
         y += 34;
 
-        // 按钮
         g_btnInstall = CreateWindowExW(0, L"BUTTON", L"安装",
             WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
             MARGIN, y, 130, 38, hwnd, (HMENU)ID_INSTALL, nullptr, nullptr);
@@ -476,7 +452,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
             MARGIN + 142, y, 100, 38, hwnd, (HMENU)ID_UNINSTALL, nullptr, nullptr);
         y += 52;
 
-        // 日志
         CreateWindowExW(0, L"STATIC", L"日志",
             WS_CHILD | WS_VISIBLE, MARGIN, y, CW, 16, hwnd, nullptr, nullptr, nullptr);
         y += 18;
@@ -485,19 +460,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
             MARGIN, y, CW, 100, hwnd, (HMENU)ID_LOG, nullptr, nullptr);
         y += 108;
 
-        // 底部链接
         g_footer = CreateWindowExW(0, L"SysLink",
             L"v" UURE_VERSION_W
             L"  <a href=\"" UURE_GITHUB_W L"\">GitHub</a>",
             WS_CHILD | WS_VISIBLE,
             MARGIN, y, CW, 18, hwnd, (HMENU)ID_LINK, nullptr, nullptr);
 
-        // 字体
         for (HWND c = GetWindow(hwnd, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT))
             applyFont(c);
         SendMessageW(g_state, WM_SETFONT, (WPARAM)g_fontBold, TRUE);
 
-        // 自动查找
         std::wstring bin = autoDetect();
         if (bin.empty()) {
             logln(L"未能自动找到 GameViewer，请点 [浏览] 手动选择。");
@@ -524,7 +496,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hwnd, &ps);
-        // 顶部横幅
         RECT rc{ 0, 0, WIN_W + 100, BANNER_H };
         FillRect(hdc, &rc, g_brushBanner);
 
@@ -589,14 +560,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
     return DefWindowProcW(hwnd, msg, w, l);
 }
 
-// ---- 入口 ----
-
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nShow) {
     INITCOMMONCONTROLSEX icc{ sizeof(icc), ICC_STANDARD_CLASSES | ICC_LINK_CLASS };
     InitCommonControlsEx(&icc);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
-    // 字体
     NONCLIENTMETRICSW ncm{ sizeof(ncm) };
     SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
     g_font = CreateFontIndirectW(&ncm.lfMessageFont);
@@ -612,7 +580,6 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nShow) {
 
     g_brushBanner = CreateSolidBrush(CLR_BANNER);
 
-    // 窗口
     WNDCLASSEXW wc{ sizeof(wc) };
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInst;

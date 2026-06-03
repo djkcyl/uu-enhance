@@ -88,10 +88,8 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM w, LPARAM l) {
     return DefWindowProcW(h, msg, w, l);
 }
 
-// 在基础图标右下角叠加一个小齿轮，用于区分补丁托盘和 UU 自己的图标。
-// 齿轮用 Segoe MDL2 Assets U+E713 (Settings)，白色描边 + 深灰填充。
-// 在单独的 32-bit DIB 上画字形取像素覆盖范围，再手动合成到主图标（因为
-// GDI 文字渲染不写 alpha 通道，直接画会变透明）。
+// 在基础图标右下角叠加一个小齿轮(Segoe MDL2 Assets U+E713)，区分补丁托盘和 UU 自己的图标。
+// GDI 文字渲染不写 alpha，所以在临时 DIB 上画字形取覆盖范围，再手动合成到主图标。
 static HICON overlayGear(HICON base) {
     int cx = GetSystemMetrics(SM_CXSMICON);
     int cy = GetSystemMetrics(SM_CYSMICON);
@@ -102,7 +100,6 @@ static HICON overlayGear(HICON base) {
     bih.biSize = sizeof(bih); bih.biWidth = cx; bih.biHeight = -cy;
     bih.biPlanes = 1; bih.biBitCount = 32; bih.biCompression = BI_RGB;
 
-    // 主图层：画基础图标
     HDC dc = CreateCompatibleDC(screen);
     DWORD* px = nullptr;
     HBITMAP bmp = CreateDIBSection(dc, (BITMAPINFO*)&bih, DIB_RGB_COLORS, (void**)&px, nullptr, 0);
@@ -112,7 +109,6 @@ static HICON overlayGear(HICON base) {
     SelectObject(dc, oldBmp);
     DeleteDC(dc);
 
-    // 临时图层：画齿轮字形，用来取像素覆盖范围
     HDC tmp = CreateCompatibleDC(screen);
     DWORD* tp = nullptr;
     HBITMAP tbmp = CreateDIBSection(tmp, (BITMAPINFO*)&bih, DIB_RGB_COLORS, (void**)&tp, nullptr, 0);
@@ -127,17 +123,15 @@ static HICON overlayGear(HICON base) {
     int ox = cx - gs, oy = cy - gs;
     wchar_t glyph[] = { 0xE713, 0 };
 
-    // 白色描边（9 次偏移绘制）
     std::memset(tp, 0, n * 4);
     SetTextColor(tmp, RGB(255, 255, 255));
     for (int dx = -1; dx <= 1; dx++)
         for (int dy = -1; dy <= 1; dy++)
             TextOutW(tmp, ox + dx, oy + dy, glyph, 1);
-    GdiFlush();  // 必须刷新, 否则下面读到的 DIB 像素还是空的
+    GdiFlush();  // 读 DIB 像素前必须刷，否则 GDI 还没把字形写进内存
     for (int i = 0; i < n; i++)
         if (tp[i] & 0x00FFFFFF) px[i] = 0xFFFFFFFF;
 
-    // 深灰齿轮本体
     std::memset(tp, 0, n * 4);
     SetTextColor(tmp, RGB(80, 80, 80));
     TextOutW(tmp, ox, oy, glyph, 1);
@@ -151,7 +145,7 @@ static HICON overlayGear(HICON base) {
     DeleteObject(tbmp);
     DeleteDC(tmp);
 
-    // 全黑 mask（per-pixel alpha 在 color bitmap 里，mask 全 0 = 不额外遮挡）
+    // mask 全黑，让 alpha 完全由 color bitmap 的 per-pixel alpha 决定
     HBITMAP mask = CreateBitmap(cx, cy, 1, 1, nullptr);
     HDC mdc = CreateCompatibleDC(screen);
     HGDIOBJ oldM = SelectObject(mdc, mask);
