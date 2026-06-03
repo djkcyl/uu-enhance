@@ -2,6 +2,7 @@
 #include <shellapi.h>
 #include <vector>
 #include <cstdio>
+#include <cstring>
 #include "app.h"
 #include "config.h"
 #include "log.h"
@@ -87,6 +88,85 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM w, LPARAM l) {
     return DefWindowProcW(h, msg, w, l);
 }
 
+// 在基础图标右下角叠加一个小齿轮，用于区分补丁托盘和 UU 自己的图标。
+// 齿轮用 Segoe MDL2 Assets U+E713 (Settings)，白色描边 + 深灰填充。
+// 在单独的 32-bit DIB 上画字形取像素覆盖范围，再手动合成到主图标（因为
+// GDI 文字渲染不写 alpha 通道，直接画会变透明）。
+static HICON overlayGear(HICON base) {
+    int cx = GetSystemMetrics(SM_CXSMICON);
+    int cy = GetSystemMetrics(SM_CYSMICON);
+    int n = cx * cy;
+
+    HDC screen = GetDC(nullptr);
+    BITMAPINFOHEADER bih{};
+    bih.biSize = sizeof(bih); bih.biWidth = cx; bih.biHeight = -cy;
+    bih.biPlanes = 1; bih.biBitCount = 32; bih.biCompression = BI_RGB;
+
+    // 主图层：画基础图标
+    HDC dc = CreateCompatibleDC(screen);
+    DWORD* px = nullptr;
+    HBITMAP bmp = CreateDIBSection(dc, (BITMAPINFO*)&bih, DIB_RGB_COLORS, (void**)&px, nullptr, 0);
+    HGDIOBJ oldBmp = SelectObject(dc, bmp);
+    std::memset(px, 0, n * 4);
+    DrawIconEx(dc, 0, 0, base, cx, cy, 0, nullptr, DI_NORMAL);
+    SelectObject(dc, oldBmp);
+    DeleteDC(dc);
+
+    // 临时图层：画齿轮字形，用来取像素覆盖范围
+    HDC tmp = CreateCompatibleDC(screen);
+    DWORD* tp = nullptr;
+    HBITMAP tbmp = CreateDIBSection(tmp, (BITMAPINFO*)&bih, DIB_RGB_COLORS, (void**)&tp, nullptr, 0);
+    HGDIOBJ oldTbmp = SelectObject(tmp, tbmp);
+
+    int gs = cx * 9 / 16;
+    if (gs < 7) gs = 7;
+    HFONT font = CreateFontW(-gs, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+        DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, L"Segoe MDL2 Assets");
+    HGDIOBJ oldFont = SelectObject(tmp, font);
+    SetBkMode(tmp, TRANSPARENT);
+    int ox = cx - gs, oy = cy - gs;
+    wchar_t glyph[] = { 0xE713, 0 };
+
+    // 白色描边（9 次偏移绘制）
+    std::memset(tp, 0, n * 4);
+    SetTextColor(tmp, RGB(255, 255, 255));
+    for (int dx = -1; dx <= 1; dx++)
+        for (int dy = -1; dy <= 1; dy++)
+            TextOutW(tmp, ox + dx, oy + dy, glyph, 1);
+    GdiFlush();  // 必须刷新, 否则下面读到的 DIB 像素还是空的
+    for (int i = 0; i < n; i++)
+        if (tp[i] & 0x00FFFFFF) px[i] = 0xFFFFFFFF;
+
+    // 深灰齿轮本体
+    std::memset(tp, 0, n * 4);
+    SetTextColor(tmp, RGB(80, 80, 80));
+    TextOutW(tmp, ox, oy, glyph, 1);
+    GdiFlush();
+    for (int i = 0; i < n; i++)
+        if (tp[i] & 0x00FFFFFF) px[i] = 0xFF000000 | (tp[i] & 0x00FFFFFF);
+
+    SelectObject(tmp, oldFont);
+    DeleteObject(font);
+    SelectObject(tmp, oldTbmp);
+    DeleteObject(tbmp);
+    DeleteDC(tmp);
+
+    // 全黑 mask（per-pixel alpha 在 color bitmap 里，mask 全 0 = 不额外遮挡）
+    HBITMAP mask = CreateBitmap(cx, cy, 1, 1, nullptr);
+    HDC mdc = CreateCompatibleDC(screen);
+    HGDIOBJ oldM = SelectObject(mdc, mask);
+    PatBlt(mdc, 0, 0, cx, cy, BLACKNESS);
+    SelectObject(mdc, oldM);
+    DeleteDC(mdc);
+    ReleaseDC(nullptr, screen);
+
+    ICONINFO ii{ TRUE, 0, 0, mask, bmp };
+    HICON result = CreateIconIndirect(&ii);
+    DeleteObject(bmp);
+    DeleteObject(mask);
+    return result ? result : base;
+}
+
 static DWORD WINAPI tray_thread(LPVOID) {
     HINSTANCE hInst = GetModuleHandleW(nullptr);
     WNDCLASSEXW wc{}; wc.cbSize = sizeof(wc);
@@ -101,6 +181,7 @@ static DWORD WINAPI tray_thread(LPVOID) {
     if (GetModuleFileNameW(GetModuleHandleW(nullptr), exePath, MAX_PATH))
         ico = ExtractIconW(hInst, exePath, 0);
     if (!ico || ico == (HICON)1) ico = LoadIconW(nullptr, (LPCWSTR)IDI_APPLICATION);
+    ico = overlayGear(ico);
 
     g_nid.cbSize = sizeof(g_nid);
     g_nid.hWnd = g_wnd; g_nid.uID = 1;
