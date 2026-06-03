@@ -1,0 +1,17 @@
+# 构建产物（可由 CMake 重新生成）
+/build/
+/out/
+.vs/
+*.user
+
+# 本地配置
+.mcp.json
+
+# IDA 数据库
+*.i64
+*.idb
+*.til
+*.nam
+*.id0
+*.id1
+*.id2
