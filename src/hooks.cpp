@@ -17,13 +17,17 @@
 using fn_send_t   = void*(__fastcall*)(void*, void*, void*, void*, void*, void*, void*, void*);
 using fn_cap_t    = void (__fastcall*)(void* thiz, unsigned __int8 enable, char toast, char a4);
 using fn_clipupd_t= void (__fastcall*)(void* thiz);
-using fn_cliphdl_t= __int64(__fastcall*)(void* thiz, void* a2, void* a3);
+using fn_fmtlist_t= __int64(__fastcall*)(void* thiz, void* a2, void* a3);
+using fn_clipget_t= __int64(__fastcall*)(void* hwnd, unsigned int fmt, void* out);
+using fn_sendfmt_t= __int64(__fastcall*)(void* thiz);
 using fn_gpupd_t  = void (__fastcall*)(void* thiz, void* padState);
 
 static fn_send_t    o_sendMouse = nullptr, o_sendWheel = nullptr, o_sendKey = nullptr;
 static fn_cap_t     o_enableCapture = nullptr;
 static fn_clipupd_t o_clipUpdate = nullptr;
-static fn_cliphdl_t o_clipHandle = nullptr;
+static fn_fmtlist_t o_clipFmtList = nullptr;
+static fn_clipget_t o_clipGet = nullptr;
+static fn_sendfmt_t o_clipSendFmt = nullptr;
 static fn_gpupd_t   o_gamepadUpdate = nullptr, o_gamepadConnect = nullptr, o_gamepadDisconnect = nullptr;
 
 // CCS 内 device_id (std::string) 偏移，由所选版本表设置；仅用于去重/回退名(读错不影响分会话)
@@ -137,14 +141,38 @@ static void __fastcall h_enableCapture(void* thiz, unsigned __int8 enable, char 
     o_enableCapture(thiz, enable, toast, a4);
 }
 
-// 剪贴板
+// 剪贴板。出向 on_clipboard_update 挡掉就不外推本地剪贴板。
+// 入向不能掐整个分发器(handle_clipboard_request)——那是请求/应答，掐了对端握手会卡死、
+// 把没补丁的对端剪贴板搞坏。只钝化 do_handle_format_list_request 这个落地点：关同步时
+// 不让它 EmptyClipboard+装延迟渲染桩，分发器照常把 FormatListResponse 应答给对端。
 static void __fastcall h_clipUpdate(void* thiz) {
     if (!active_clipSync()) return;
     o_clipUpdate(thiz);
 }
-static __int64 __fastcall h_clipHandle(void* thiz, void* a2, void* a3) {
+// 出向格式表通告。主控剪贴板一变就枚举本地格式发给对端，对端据此 EmptyClipboard+装延迟渲染桩。
+// 这是主控主动发的(非应答)，关同步时直接不发，对端剪贴板就不会被清空。
+static __int64 __fastcall h_clipSendFmt(void* thiz) {
     if (!active_clipSync()) return 0;
-    return o_clipHandle(thiz, a2, a3);
+    return o_clipSendFmt(thiz);
+}
+static __int64 __fastcall h_clipFmtList(void* thiz, void* a2, void* a3) {
+    if (!active_clipSync()) return 0;
+    return o_clipFmtList(thiz, a2, a3);
+}
+// 出向数据服务点。对端粘贴时来拉主控剪贴板，最终经 get_clipboard_data 读本地剪贴板应答。
+// 关同步时把输出 std::string 置空、返回失败——等同剪贴板为空(app 的正常分支)，对端拿到空、
+// 不卡，且本地剪贴板没被读出去。out 是 MSVC std::string：[0..15]SSO/指针 [16]size [24]cap。
+static __int64 __fastcall h_clipGet(void* hwnd, unsigned int fmt, void* out) {
+    if (!active_clipSync()) {
+        if (out) {
+            size_t* s = (size_t*)out;
+            char* buf = s[3] >= 0x10 ? *(char**)out : (char*)out;
+            s[2] = 0;
+            buf[0] = 0;
+        }
+        return 0;
+    }
+    return o_clipGet(hwnd, fmt, out);
 }
 
 // 手柄
@@ -306,7 +334,9 @@ void install_hooks(uintptr_t base) {
     mk(r, base, {"GamepadManager::Disconnect(), index=", "GamepadManager::Disconnect"}, V.gpDisconnect, (void*)h_gamepadDisconnect, (void**)&o_gamepadDisconnect, "GamepadManager::Disconnect");
     mk(r, base, {"[%d] GamepadManager::Update(), json=%s", "GamepadManager::Update"},    V.gpUpdate,   (void*)h_gamepadUpdate,     (void**)&o_gamepadUpdate,     "GamepadManager::Update");
     mk(r, base, {"Clipboard::on_clipboard_update", "Get clipboard data failed"},         V.clipUpdate, (void*)h_clipUpdate, (void**)&o_clipUpdate, "on_clipboard_update");
-    mk(r, base, {"Clipboard::handle_clipboard_request", "Received auto_save_complete: total="}, V.clipHandle, (void*)h_clipHandle, (void**)&o_clipHandle, "handle_clipboard_request");
+    mk(r, base, {"Clipboard::do_handle_format_list_request", "do_handle_format_list_request: is_file_transferring=true"}, V.clipFmtList, (void*)h_clipFmtList, (void**)&o_clipFmtList, "do_handle_format_list_request");
+    mk(r, base, {"Clipboard::get_clipboard_data", "GlobalLock failed: "}, V.clipGet, (void*)h_clipGet, (void**)&o_clipGet, "get_clipboard_data");
+    mk(r, base, {"Clipboard::do_send_format_list", "do_send_format_list: send_request failed"}, V.clipSendFmt, (void*)h_clipSendFmt, (void**)&o_clipSendFmt, "do_send_format_list");
     // 会话注册/移除
     mk(r, base, {"ControlConnectionSession::setConnectInfo", "startConnectOtherDevice, device_id: "}, V.setConnInfo, (void*)h_setConnInfo, (void**)&o_setConnInfo, "setConnectInfo");
     mk(r, base, {"ControlConnectionSession::closeControlConnect"}, V.closeConn, (void*)h_closeConn,   (void**)&o_closeConn,   "closeControlConnect");

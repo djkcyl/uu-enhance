@@ -14,7 +14,7 @@ struct VerSet {
     uintptr_t deviceIdOff;          // CCS 内 device_id std::string 偏移
     Target sendMouse, sendWheel, sendKey, enableCapture, updateCursor;
     Target gpConnect, gpDisconnect, gpUpdate;
-    Target clipUpdate, clipHandle;
+    Target clipUpdate, clipFmtList, clipGet, clipSendFmt;
     Target setConnInfo, closeConn, exitRoom;
 };
 
@@ -29,7 +29,9 @@ inline const VerSet kVer[] = {
       /*gpDisconnect*/ { 0x9eac20, "48 89 5C 24 18 48 89 74 24 20 57 48 81 EC 90 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 84 24 88 01 00 00 48 8B FA 48" },
       /*gpUpdate    */ { 0x9eeeb0, "40 53 48 83 EC 50 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 48 48 8B C2 48 8B D9 FF 05 ?? ?? ?? ?? 48 8D 54 24 28 48 8B" },
       /*clipUpdate  */ { 0x8c5280, "48 89 5C 24 10 55 48 8D AC 24 60 FF FF FF 48 81 EC A0 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 90 00 00 00 48 8B" },
-      /*clipHandle  */ { 0x8bf810, "40 55 53 56 57 41 56 48 8D AC 24 40 FF FF FF 48 81 EC C0 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 B0 00 00 00 8B" },
+      /*clipFmtList */ { 0x8badb0, "48 89 5C 24 10 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 40 FF FF FF 48 81 EC C0 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 B8 00 00 00" },
+      /*clipGet     */ { 0x8bcca0, "40 55 53 56 57 41 54 41 56 41 57 48 8D AC 24 C0 FE FF FF 48 81 EC 40 02 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 30 01 00 00 49 8B D8 44 8B" },
+      /*clipSendFmt */ { 0x8bb9c0, "48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 60 FF FF FF 48 81 EC A0 01 00 00 48 8B F1 45 33 C0 33 D2 48 8D 4C 24 50 E8 ?? ?? ?? ??" },
       /*setConnInfo */ { 0x867ce0, "48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 4C 89 74 24 20 55 48 8D 6C 24 90 48 81 EC 70 01 00 00 4C 8B F2 48 8B F1 E8" },
       /*closeConn   */ { 0x83a3f0, "48 89 5C 24 08 57 48 81 EC 70 01 00 00 48 8B F9 83 A1 00 11 00 00 FE E8 ?? ?? ?? ?? 48 8B D8 48 8D 05 ?? ?? ?? ?? 48 89" },
       /*exitRoom    */ { 0x841b90, "48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 4C 89 74 24 20 55 48 8D 6C 24 90 48 81 EC 70 01 00 00 48 8B D9 E8 ?? ?? ??" },
