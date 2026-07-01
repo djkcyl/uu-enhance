@@ -20,6 +20,7 @@ using fn_clipupd_t= void (__fastcall*)(void* thiz);
 using fn_fmtlist_t= __int64(__fastcall*)(void* thiz, void* a2, void* a3);
 using fn_clipget_t= __int64(__fastcall*)(void* hwnd, unsigned int fmt, void* out);
 using fn_sendfmt_t= __int64(__fastcall*)(void* thiz);
+using fn_clipreq_t= __int64(__fastcall*)(void* thiz, void* a2, void* a3);
 using fn_gpupd_t  = void (__fastcall*)(void* thiz, void* padState);
 
 static fn_send_t    o_sendMouse = nullptr, o_sendWheel = nullptr, o_sendKey = nullptr;
@@ -28,6 +29,7 @@ static fn_clipupd_t o_clipUpdate = nullptr;
 static fn_fmtlist_t o_clipFmtList = nullptr;
 static fn_clipget_t o_clipGet = nullptr;
 static fn_sendfmt_t o_clipSendFmt = nullptr;
+static fn_clipreq_t o_clipReq = nullptr;
 static fn_gpupd_t   o_gamepadUpdate = nullptr, o_gamepadConnect = nullptr, o_gamepadDisconnect = nullptr;
 
 // CCS 内 device_id (std::string) 偏移，由所选版本表设置；仅用于去重/回退名(读错不影响分会话)
@@ -38,6 +40,11 @@ struct SessState { bool viewOnly; bool clipSync; bool gamepadOff; std::wstring d
 static std::mutex                 g_smtx;
 static std::map<void*, SessState> g_sessions;
 static void*                      g_activeCCS = nullptr;   // 最近有输入事件的会话(前台)
+
+// 剪贴板角色区分(持 g_smtx)：每条连接各有独立的 Clipboard 实例(thiz)。
+static void*                      g_serverClip = nullptr;  // 被控侧 Clipboard 实例
+static std::map<void*, void*>     g_clipToCcs;             // 主控 Clipboard 实例 -> 所属 CCS
+static thread_local void*         t_curClip = nullptr;     // 当前处理中的 Clipboard(给 get_clipboard_data 查)
 
 // SEH 安全读取 CCS+OFF 处 std::string 的字节到 POD 缓冲(无 C++ 对象，可用 __try)
 static int safe_copy_devid(void* ccs, char* buf, int bufsz) {
@@ -110,10 +117,32 @@ static bool active_viewOnly() {
     if (!g_activeCCS) return cfg::g_viewOnly.load();
     return sessOf(g_activeCCS).viewOnly;
 }
-static bool active_clipSync() {
+// 剪贴板按“哪个 Clipboard 实例(clip)在处理”区分角色，实现主控/被控独立开关、互不连累：
+//  - 每条主控会话有独立的 Clipboard 实例；被控侧也有一个独立实例(无主控会话时出现的那个)。
+//  - clip == g_serverClip  → 被控：按全局开关 cfg::g_ctrlClip。
+//  - 其它 clip             → 主控：按该实例绑定的会话 clipSync（首次在某主控会话活动时出现即绑定）。
+// g_serverClip 在“无主控会话(g_activeCCS 为空)”时出现的实例上学习，稳定后固定；此时也把它从
+// 主控映射里剔除，防止早期未学习时被误绑。持 g_smtx 调用。
+static bool clip_allowed_locked(void* clip) {
+    if (!clip) {   // 未知来源(拿不到实例) → 回退到活动会话/全局，尽量放行
+        if (g_activeCCS) return sessOf(g_activeCCS).clipSync;
+        return true;
+    }
+    if (!g_activeCCS) {          // 无主控会话 → 当前活动的必是被控/本机实例
+        g_serverClip = clip;
+        g_clipToCcs.erase(clip);
+    }
+    if (clip == g_serverClip) return cfg::g_ctrlClip.load();   // 被控
+    // 主控：绑定实例到会话
+    auto it = g_clipToCcs.find(clip);
+    void* ccs = (it != g_clipToCcs.end()) ? it->second : nullptr;
+    if (!ccs && g_activeCCS) { g_clipToCcs[clip] = g_activeCCS; ccs = g_activeCCS; }
+    if (ccs) { auto s = g_sessions.find(ccs); if (s != g_sessions.end()) return s->second.clipSync; }
+    return true;   // 认不出的主控实例 → 放行
+}
+static bool clip_allowed(void* clip) {
     std::lock_guard<std::mutex> lk(g_smtx);
-    if (!g_activeCCS) return cfg::g_clipSync.load();
-    return sessOf(g_activeCCS).clipSync;
+    return clip_allowed_locked(clip);
 }
 static bool active_gpBlock() {
     std::lock_guard<std::mutex> lk(g_smtx);
@@ -141,29 +170,38 @@ static void __fastcall h_enableCapture(void* thiz, unsigned __int8 enable, char 
     o_enableCapture(thiz, enable, toast, a4);
 }
 
-// 剪贴板。出向 on_clipboard_update 挡掉就不外推本地剪贴板。
-// 入向不能掐整个分发器(handle_clipboard_request)——那是请求/应答，掐了对端握手会卡死、
-// 把没补丁的对端剪贴板搞坏。只钝化 do_handle_format_list_request 这个落地点：关同步时
-// 不让它 EmptyClipboard+装延迟渲染桩，分发器照常把 FormatListResponse 应答给对端。
+// 出向：本地剪贴板一变就外推给对端。thiz 就是这条连接的 Clipboard 实例。它内部会调
+// get_clipboard_data 读本地剪贴板，所以进原函数前把 t_curClip 设成本实例，供其查角色。
 static void __fastcall h_clipUpdate(void* thiz) {
-    if (!active_clipSync()) return;
+    if (!clip_allowed(thiz)) return;
+    void* prev = t_curClip; t_curClip = thiz;
     o_clipUpdate(thiz);
+    t_curClip = prev;
 }
-// 出向格式表通告。主控剪贴板一变就枚举本地格式发给对端，对端据此 EmptyClipboard+装延迟渲染桩。
-// 这是主控主动发的(非应答)，关同步时直接不发，对端剪贴板就不会被清空。
+// 出向格式表通告(主动发)：关则不发，对端不会 EmptyClipboard。
 static __int64 __fastcall h_clipSendFmt(void* thiz) {
-    if (!active_clipSync()) return 0;
+    if (!clip_allowed(thiz)) return 0;
     return o_clipSendFmt(thiz);
 }
+// 入向格式表落地：关则不处理对端通告(不接收对端剪贴板)。
 static __int64 __fastcall h_clipFmtList(void* thiz, void* a2, void* a3) {
-    if (!active_clipSync()) return 0;
+    if (!clip_allowed(thiz)) return 0;
     return o_clipFmtList(thiz, a2, a3);
 }
-// 出向数据服务点。对端粘贴时来拉主控剪贴板，最终经 get_clipboard_data 读本地剪贴板应答。
-// 关同步时把输出 std::string 置空、返回失败——等同剪贴板为空(app 的正常分支)，对端拿到空、
-// 不卡，且本地剪贴板没被读出去。out 是 MSVC std::string：[0..15]SSO/指针 [16]size [24]cap。
+// 中央请求分发器 handle_clipboard_request：不能掐(掐了握手会卡死对端)，只用它带的 thiz
+// 标出“当前正在为哪个 Clipboard 处理请求”，供内部 get_clipboard_data 查角色，照常放行。
+static __int64 __fastcall h_clipReq(void* thiz, void* a2, void* a3) {
+    void* prev = t_curClip; t_curClip = thiz;
+    __int64 r = o_clipReq(thiz, a2, a3);
+    t_curClip = prev;
+    return r;
+}
+// 出向数据服务点：对端粘贴时来拉本机剪贴板，经此读本地剪贴板应答。它不带会话/实例，用
+// t_curClip(由上面两个入口设置)判角色。关则把输出 std::string 置空、返回失败——等同剪贴板
+// 为空(app 正常分支)，对端拿到空、不卡，本地剪贴板也没被读出去。
+// out 是 MSVC std::string：[0..15]SSO/指针 [16]size [24]cap。
 static __int64 __fastcall h_clipGet(void* hwnd, unsigned int fmt, void* out) {
-    if (!active_clipSync()) {
+    if (!clip_allowed(t_curClip)) {
         if (out) {
             size_t* s = (size_t*)out;
             char* buf = s[3] >= 0x10 ? *(char**)out : (char*)out;
@@ -246,6 +284,8 @@ static void session_remove(void* ccs) {
     std::lock_guard<std::mutex> lk(g_smtx);
     if (g_sessions.erase(ccs)) uu_log("session remove: ccs=%p", ccs);
     if (g_activeCCS == ccs) g_activeCCS = nullptr;
+    for (auto it = g_clipToCcs.begin(); it != g_clipToCcs.end(); )   // 解绑该会话的 Clipboard 实例
+        it = (it->second == ccs) ? g_clipToCcs.erase(it) : std::next(it);
 }
 static __int64 __fastcall h_setConnInfo(void* ccs, void* a2, void* a3, void* a4) {
     {
@@ -337,6 +377,7 @@ void install_hooks(uintptr_t base) {
     mk(r, base, {"Clipboard::do_handle_format_list_request", "do_handle_format_list_request: is_file_transferring=true"}, V.clipFmtList, (void*)h_clipFmtList, (void**)&o_clipFmtList, "do_handle_format_list_request");
     mk(r, base, {"Clipboard::get_clipboard_data", "GlobalLock failed: "}, V.clipGet, (void*)h_clipGet, (void**)&o_clipGet, "get_clipboard_data");
     mk(r, base, {"Clipboard::do_send_format_list", "do_send_format_list: send_request failed"}, V.clipSendFmt, (void*)h_clipSendFmt, (void**)&o_clipSendFmt, "do_send_format_list");
+    mk(r, base, {"Clipboard::handle_clipboard_request", "Received auto_save_complete: total="}, V.clipReq, (void*)h_clipReq, (void**)&o_clipReq, "handle_clipboard_request");
     // 会话注册/移除
     mk(r, base, {"ControlConnectionSession::setConnectInfo", "startConnectOtherDevice, device_id: "}, V.setConnInfo, (void*)h_setConnInfo, (void**)&o_setConnInfo, "setConnectInfo");
     mk(r, base, {"ControlConnectionSession::closeControlConnect"}, V.closeConn, (void*)h_closeConn,   (void**)&o_closeConn,   "closeControlConnect");

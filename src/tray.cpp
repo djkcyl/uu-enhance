@@ -10,7 +10,7 @@
 
 #define WM_TRAY (WM_APP + 17)
 // 菜单命令编码：每个会话 3 个开关。cmd = ID_SESS_BASE + sessionIndex*10 + field
-enum { ID_GITHUB = 1, ID_SESS_BASE = 2000 };
+enum { ID_GITHUB = 1, ID_CTRL_CLIP = 2, ID_SESS_BASE = 2000 };
 
 static HWND  g_wnd = nullptr;
 static NOTIFYICONDATAW g_nid{};
@@ -37,6 +37,10 @@ static void show_menu(HWND hwnd) {
             AppendMenuW(m, MF_POPUP, (UINT_PTR)sub, title);
         }
     }
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+
+    // 被控端全局开关：本机被别人控制时，是否允许对方读/写本机剪贴板
+    AppendMenuW(m, MF_STRING | (cfg::g_ctrlClip.load() ? MF_CHECKED : 0), ID_CTRL_CLIP, L"被控时允许剪贴板");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
 
     // 调试信息：版本 + 各 hook 点定位情况
@@ -73,6 +77,9 @@ static void show_menu(HWND hwnd) {
 
     if (cmd == ID_GITHUB) {
         ShellExecuteW(nullptr, L"open", UURE_GITHUB_W, nullptr, nullptr, SW_SHOWNORMAL);
+    } else if (cmd == ID_CTRL_CLIP) {
+        cfg::g_ctrlClip = !cfg::g_ctrlClip.load();
+        cfg::save();
     } else if (cmd >= ID_SESS_BASE) {
         int idx = (cmd - ID_SESS_BASE) / 10, field = (cmd - ID_SESS_BASE) % 10;
         if (idx >= 0 && idx < (int)g_lastSnap.size() && field >= 0 && field <= 2)

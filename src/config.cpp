@@ -6,6 +6,7 @@ namespace cfg {
     std::atomic<bool> g_viewOnly{true};
     std::atomic<bool> g_clipSync{false};
     std::atomic<bool> g_gamepadOff{false};
+    std::atomic<bool> g_ctrlClip{true};
 
     static std::wstring iniPath() {
         wchar_t buf[MAX_PATH]{};
@@ -27,6 +28,7 @@ namespace cfg {
         g_viewOnly = GetPrivateProfileIntW(L"general", L"view_only", 1, p.c_str()) != 0;
         g_clipSync = GetPrivateProfileIntW(L"general", L"clipboard_sync", 0, p.c_str()) != 0;
         g_gamepadOff = GetPrivateProfileIntW(L"general", L"gamepad_off", 0, p.c_str()) != 0;
+        g_ctrlClip = GetPrivateProfileIntW(L"general", L"controlled_clipboard", 1, p.c_str()) != 0;
     }
 
     void save() {
@@ -34,6 +36,7 @@ namespace cfg {
         WritePrivateProfileStringW(L"general", L"view_only",      g_viewOnly ? L"1" : L"0", p.c_str());
         WritePrivateProfileStringW(L"general", L"clipboard_sync", g_clipSync ? L"1" : L"0", p.c_str());
         WritePrivateProfileStringW(L"general", L"gamepad_off",    g_gamepadOff ? L"1" : L"0", p.c_str());
+        WritePrivateProfileStringW(L"general", L"controlled_clipboard", g_ctrlClip ? L"1" : L"0", p.c_str());
     }
 
     std::wstring exe_version() {

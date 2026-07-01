@@ -14,7 +14,7 @@ struct VerSet {
     uintptr_t deviceIdOff;          // CCS 内 device_id std::string 偏移
     Target sendMouse, sendWheel, sendKey, enableCapture, updateCursor;
     Target gpConnect, gpDisconnect, gpUpdate;
-    Target clipUpdate, clipFmtList, clipGet, clipSendFmt;
+    Target clipUpdate, clipFmtList, clipGet, clipSendFmt, clipReq;
     Target setConnInfo, closeConn, exitRoom;
 };
 
@@ -32,6 +32,7 @@ inline const VerSet kVer[] = {
       /*clipFmtList */ { 0x91A560, "48 89 5C 24 10 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 40 FF FF FF 48 81 EC C0 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 B8 00 00 00" },
       /*clipGet     */ { 0x91C450, "40 55 53 56 57 41 54 41 56 41 57 48 8D AC 24 C0 FE FF FF 48 81 EC 40 02 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 30 01 00 00 49 8B D8" },
       /*clipSendFmt */ { 0x91B170, "48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 60 FF FF FF 48 81 EC A0 01 00 00 48 8B F1 45 33 C0 33 D2 48 8D 4C 24 50" },
+      /*clipReq     */ { 0x91EFC0, "40 55 53 56 57 41 56 48 8D AC 24 40 FF FF FF 48 81 EC C0 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 B0 00 00 00 8B F2 48 8B F9 41 8B 40 1C 83 F8 05 75 0E" },
       /*setConnInfo */ { 0x8C2BB0, "48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 4C 89 74 24 20 55 48 8D 6C 24 90 48 81 EC 70 01 00 00 4C 8B F2 48 8B F1 E8" },
       /*closeConn   */ { 0x892B70, "48 89 5C 24 08 57 48 81 EC 70 01 00 00 48 8B F9 83 A1 38 12 00 00 FE E8 ?? ?? ?? ?? 48 8B D8 48 8D 05 ?? ?? ?? ?? 48 89 44 24 30 48 C7 44 24 38 2D 00 00 00" },
       /*exitRoom    */ { 0x89B2E0, "48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 4C 89 74 24 20 55 48 8D 6C 24 90 48 81 EC 70 01 00 00 48 8B D9 E8 ?? ?? ?? ?? 48 8B F8 48 8D 35 ?? ?? ?? ?? 48 89 74 24 30 48 C7 44 24 38 22 00 00 00 4C 8D 35" },
@@ -49,6 +50,7 @@ inline const VerSet kVer[] = {
       /*clipFmtList */ { 0x8badb0, "48 89 5C 24 10 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 40 FF FF FF 48 81 EC C0 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 B8 00 00 00" },
       /*clipGet     */ { 0x8bcca0, "40 55 53 56 57 41 54 41 56 41 57 48 8D AC 24 C0 FE FF FF 48 81 EC 40 02 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 30 01 00 00 49 8B D8 44 8B" },
       /*clipSendFmt */ { 0x8bb9c0, "48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 60 FF FF FF 48 81 EC A0 01 00 00 48 8B F1 45 33 C0 33 D2 48 8D 4C 24 50 E8 ?? ?? ?? ??" },
+      /*clipReq     */ { 0, "" },   // 4.26 未测；靠字符串锚点定位
       /*setConnInfo */ { 0x867ce0, "48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 4C 89 74 24 20 55 48 8D 6C 24 90 48 81 EC 70 01 00 00 4C 8B F2 48 8B F1 E8" },
       /*closeConn   */ { 0x83a3f0, "48 89 5C 24 08 57 48 81 EC 70 01 00 00 48 8B F9 83 A1 00 11 00 00 FE E8 ?? ?? ?? ?? 48 8B D8 48 8D 05 ?? ?? ?? ?? 48 89" },
       /*exitRoom    */ { 0x841b90, "48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 4C 89 74 24 20 55 48 8D 6C 24 90 48 81 EC 70 01 00 00 48 8B D9 E8 ?? ?? ??" },
