@@ -16,7 +16,8 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # 钉 2022：windows-latest 已迁到 windows-2025，cmake 找不到 VS2022 实例
+    runs-on: windows-2022
     defaults:
       run:
         shell: pwsh
