@@ -25,7 +25,7 @@ jobs:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # tag（去掉 v）必须等于 app.h 里的 UURE_VERSION，否则安装器的更新检查会对不上
       - name: 校验版本号与 tag 一致
