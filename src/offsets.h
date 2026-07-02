@@ -16,6 +16,8 @@ struct VerSet {
     Target gpConnect, gpDisconnect, gpUpdate;
     Target clipUpdate, clipFmtList, clipGet, clipSendFmt, clipReq;
     Target setConnInfo, closeConn, exitRoom;
+    Target vmwCtor;                       // VideoUi::VideoMainWindow 构造函数(每会话一个视频窗)
+    uintptr_t vmwDevIdOff, vmwTitleOff;   // VMW 内 deviceId / 窗口标题(好友名) QString 偏移
 };
 
 inline const VerSet kVer[] = {
@@ -36,6 +38,8 @@ inline const VerSet kVer[] = {
       /*setConnInfo */ { 0x8C2BB0, "48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 4C 89 74 24 20 55 48 8D 6C 24 90 48 81 EC 70 01 00 00 4C 8B F2 48 8B F1 E8" },
       /*closeConn   */ { 0x892B70, "48 89 5C 24 08 57 48 81 EC 70 01 00 00 48 8B F9 83 A1 38 12 00 00 FE E8 ?? ?? ?? ?? 48 8B D8 48 8D 05 ?? ?? ?? ?? 48 89 44 24 30 48 C7 44 24 38 2D 00 00 00" },
       /*exitRoom    */ { 0x89B2E0, "48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 4C 89 74 24 20 55 48 8D 6C 24 90 48 81 EC 70 01 00 00 48 8B D9 E8 ?? ?? ?? ?? 48 8B F8 48 8D 35 ?? ?? ?? ?? 48 89 74 24 30 48 C7 44 24 38 22 00 00 00 4C 8D 35" },
+      /*vmwCtor     */ { 0x661400, "48 89 5C 24 10 48 89 74 24 18 48 89 4C 24 08 55 57 41 54 41 56 41 57 48 8D AC 24 E0 FD FF FF 48 81 EC 20 03 00 00 49 8B D9 49 8B F0 4C 8B FA 48 8B F9 45 33 E4 48 8B 95 78 02 00 00 E8 ?? ?? ?? ?? 90 48 8D 05 ?? ?? ?? ??" },
+      /*vmw offs    */ 344, 352,
     },
     { L"4.26.0.8259", 3984,
       /*sendMouse   */ { 0x862080, "48 89 5C 24 10 48 89 74 24 18 48 89 7C 24 20 55 41 54 41 55 41 56 41 57 48 8D AC 24 80 FB FF FF 48 81 EC 80 05 00 00 48" },
@@ -54,6 +58,8 @@ inline const VerSet kVer[] = {
       /*setConnInfo */ { 0x867ce0, "48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 4C 89 74 24 20 55 48 8D 6C 24 90 48 81 EC 70 01 00 00 4C 8B F2 48 8B F1 E8" },
       /*closeConn   */ { 0x83a3f0, "48 89 5C 24 08 57 48 81 EC 70 01 00 00 48 8B F9 83 A1 00 11 00 00 FE E8 ?? ?? ?? ?? 48 8B D8 48 8D 05 ?? ?? ?? ?? 48 89" },
       /*exitRoom    */ { 0x841b90, "48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 4C 89 74 24 20 55 48 8D 6C 24 90 48 81 EC 70 01 00 00 48 8B D9 E8 ?? ?? ??" },
+      /*vmwCtor     */ { 0, "" },   // 4.26 未核对；靠字符串锚点定位
+      /*vmw offs    */ 344, 352,    // 未核对(与 4.29 一致的猜测；读错只回退 deviceId)
     },
 };
 

@@ -89,6 +89,7 @@ docs/TECHNICAL.md 逆向分析文档
 2. 按 `docs/TECHNICAL.md` 里的地址表，用日志字符串 xref 重新定位各函数
 3. 在 `src/offsets.h` 的 `kVer[]` 最前面加一行新版本（新 RVA + 新 AOB），新版放最前是因为 `pick()` 对未知版本兜底用 `kVer[0]`
 4. 确认 CCS 的 `device_id` 偏移（`VerSet::deviceIdOff`，十进制）有没有变：反编译 `setConnectInfo`，看 "startConnectOtherDevice, device_id: " 那行日志把 `this + N` 传给 ostream<<string，`N` 就是偏移。4.26=3984、4.29=4296，逐版本会变，必须核对
-5. 重新构建、测试、发版
+5. 确认 `VideoMainWindow`（每会话视频窗，托盘会话名来源）的两个偏移 `VerSet::vmwDevIdOff`/`vmwTitleOff`（十进制）：反编译它的构造函数（日志锚点 "home_control_session_start: window_created, device_id="），看 `QString::QString(this+N, deviceId)` 得 `vmwDevIdOff`；构造里紧跟的空 QString（后续 `setWindowTitle(this, this+M)` 用它）得 `vmwTitleOff`。4.29=344/352。读错只回退显示 deviceId，不致命，但要好友名就得核对
+6. 重新构建、测试、发版
 
 多数情况下字符串定位（resolver.cpp）会自动对上，不用改代码。加已知版本条目只是让它走精确 RVA 快路径、并把 `deviceIdOff` 更新到最新基线。只有 UU 改了函数名/日志内容/二进制结构时才必须手动更新。

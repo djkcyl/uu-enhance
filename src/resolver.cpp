@@ -111,6 +111,12 @@ uintptr_t find_func_by_logstr(const ModRange& r, const char* logstr) {
     return find_func(r, { logstr });
 }
 
+uintptr_t find_string(const ModRange& r, const char* s) {
+    std::vector<uintptr_t> v;
+    find_str_addrs(r, s, v);
+    return v.empty() ? 0 : v.front();
+}
+
 uintptr_t find_func_by_aob(const ModRange& r, const char* pattern) {
     if (!pattern || !*pattern) return 0;
     std::vector<uint8_t> bytes; std::vector<bool> wild;

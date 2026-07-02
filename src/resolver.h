@@ -22,4 +22,6 @@ namespace resolver {
     uintptr_t find_func_by_logstr(const ModRange& r, const char* logstr);
     // 字节特征(AOB)定位，pattern 形如 "48 89 ?? ?? E8"，?? 为通配；要求唯一匹配，否则返回 0。
     uintptr_t find_func_by_aob(const ModRange& r, const char* pattern);
+    // 在 .rdata 里找完整字符串(其后紧跟 \0)的首次出现地址；找不到返回 0。给偏移自动推导做锚点用。
+    uintptr_t find_string(const ModRange& r, const char* s);
 }

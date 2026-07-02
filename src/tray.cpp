@@ -53,6 +53,11 @@ static void show_menu(HWND hwnd) {
         AppendMenuW(sub, MF_STRING | MF_GRAYED, 0, line);
         swprintf_s(line, L"已挂 %d/%d 个 hook", okN, (int)dbg.hooks.size());
         AppendMenuW(sub, MF_STRING | MF_GRAYED, 0, line);
+        swprintf_s(line, L"偏移 dev=%llu(%ls) vmw=%llu/%llu(%ls)",
+                   (unsigned long long)dbg.devIdOff, dbg.devIdAuto ? L"自动" : L"表",
+                   (unsigned long long)dbg.vmwDevIdOff, (unsigned long long)dbg.vmwTitleOff,
+                   dbg.vmwAuto ? L"自动" : L"表");
+        AppendMenuW(sub, MF_STRING | MF_GRAYED, 0, line);
         AppendMenuW(sub, MF_SEPARATOR, 0, nullptr);
         for (const auto& h : dbg.hooks) {
             if (h.ok)

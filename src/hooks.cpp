@@ -22,6 +22,7 @@ using fn_clipget_t= __int64(__fastcall*)(void* hwnd, unsigned int fmt, void* out
 using fn_sendfmt_t= __int64(__fastcall*)(void* thiz);
 using fn_clipreq_t= __int64(__fastcall*)(void* thiz, void* a2, void* a3);
 using fn_gpupd_t  = void (__fastcall*)(void* thiz, void* padState);
+using fn_vmwctor_t= __int64(__fastcall*)(void* thiz, void* devidQs, void* a3, void* sp, int a5, __int64 a6);
 
 static fn_send_t    o_sendMouse = nullptr, o_sendWheel = nullptr, o_sendKey = nullptr;
 static fn_cap_t     o_enableCapture = nullptr;
@@ -31,15 +32,27 @@ static fn_clipget_t o_clipGet = nullptr;
 static fn_sendfmt_t o_clipSendFmt = nullptr;
 static fn_clipreq_t o_clipReq = nullptr;
 static fn_gpupd_t   o_gamepadUpdate = nullptr, o_gamepadConnect = nullptr, o_gamepadDisconnect = nullptr;
+static fn_vmwctor_t o_vmwCtor = nullptr;
 
 // CCS 内 device_id (std::string) 偏移，由所选版本表设置；仅用于去重/回退名(读错不影响分会话)
 static uintptr_t CCS_DEVICE_ID_OFF = 3984;
+// VideoMainWindow 内 deviceId / 标题(好友名) QString 偏移，由所选版本表设置
+static uintptr_t VMW_DEVICE_ID_OFF = 344;
+static uintptr_t VMW_TITLE_OFF     = 352;
+// 偏移是否由运行时自动推导得到(而非套版本表)。给托盘调试面板显示用。
+static bool      g_devIdAuto  = false;
+static bool      g_vmwOffAuto = false;
 
-// 每个会话的状态，用 CCS 指针做 key
-struct SessState { bool viewOnly; bool clipSync; bool gamepadOff; std::wstring devid; std::wstring name; DWORD lastNameTick; };
+// 每个会话的状态，用 CCS 指针做 key。显示名不存这里，快照时按 devid 现查 VideoMainWindow 标题。
+struct SessState { bool viewOnly; bool clipSync; bool gamepadOff; std::wstring devid; };
 static std::mutex                 g_smtx;
 static std::map<void*, SessState> g_sessions;
 static void*                      g_activeCCS = nullptr;   // 最近有输入事件的会话(前台)
+
+// deviceId -> VideoMainWindow 实例(该会话的视频窗)。构造时登记，快照时按 devid 反查取标题。
+// 按 devid 字符串匹配而非裸指针：既躲开多重继承指针偏移问题，也让悬空指针无害
+// (死窗口的 devid 对不上任何在线会话，快照里会重新核对 devid，对不上就丢弃)。持 g_smtx。
+static std::map<std::wstring, void*> g_devidToVmw;
 
 // 剪贴板角色区分(持 g_smtx)：每条连接各有独立的 Clipboard 实例(thiz)。
 static void*                      g_serverClip = nullptr;  // 被控侧 Clipboard 实例
@@ -69,6 +82,85 @@ static std::wstring read_device_id(void* ccs) {
     return w;
 }
 
+// SEH 安全读取一个 Qt5 QString 的 UTF-16 内容到 POD 缓冲(无 C++ 对象，可用 __try)。
+// qsHolder 指向 QString 对象；其首成员是 d 指针，指向 QArrayData：
+//   [+4]int size  [+16]qptrdiff offset，字符在 (char*)d + offset。悬空/垃圾指针经 SEH 兜住。
+static int safe_copy_qstr(const void* qsHolder, wchar_t* buf, int cap) {
+    __try {
+        const unsigned char* d = *(const unsigned char* const*)qsHolder;
+        if (!d) return 0;
+        int size = *(const int*)(d + 4);
+        long long off = *(const long long*)(d + 16);
+        if (size <= 0 || size >= cap) return 0;   // size 是垃圾大值也挡掉
+        const unsigned short* s = (const unsigned short*)(d + off);
+        for (int i = 0; i < size; ++i) {
+            unsigned short c = s[i];
+            if (c == 0) return i;
+            buf[i] = (wchar_t)c;
+        }
+        return size;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+static std::wstring read_qstring(const void* qsHolder) {
+    wchar_t buf[256];
+    int n = safe_copy_qstr(qsHolder, buf, 256);
+    if (n <= 0) return L"";
+    return std::wstring(buf, n);
+}
+
+// —— 结构体偏移的运行时自动推导：让升级免手工找地址 ——
+// 思路：这些偏移就编码在“会自愈”的函数体/传参里，运行时抠出来即可，写死的版本表只兜底。
+//
+// deviceIdOff：指令扫描 setConnectInfo。UU 自己会 `append(stream, "..device_id: ")` 再
+// `append(stream, this->device_id)`——即定位那句日志串的引用，其后第一条
+// `lea reg,[GP基址+disp32]`(大位移，非栈基址)的 disp32 就是 device_id 成员偏移。失败返回 0。
+static uintptr_t derive_off_after_str(const resolver::ModRange& r, uintptr_t func, const char* anchorStr) {
+    if (!func) return 0;
+    uintptr_t sa = resolver::find_string(r, anchorStr);
+    if (!sa) return 0;
+    uint8_t* p0 = (uint8_t*)func;
+    uint8_t* end = p0 + 0x400;
+    if ((uintptr_t)end > r.text_end) end = (uint8_t*)r.text_end;
+    // 1) 找到指向该串的 RIP 相对 lea(48/4C 8D，mod=00 rm=101)
+    uint8_t* strLea = nullptr;
+    for (uint8_t* q = p0; q + 7 <= end; ++q)
+        if ((q[0] == 0x48 || q[0] == 0x4C) && q[1] == 0x8D && (q[2] & 0xC7) == 0x05) {
+            if ((uintptr_t)(q + 7) + *(int32_t*)(q + 3) == sa) { strLea = q; break; }
+        }
+    if (!strLea) return 0;
+    // 2) 其后近处第一条 48/49 8D，mod=10(disp32)，rm∉{rsp=4, rbp=5} 的 lea reg,[base+disp32]
+    uint8_t* s2end = strLea + 0x40;
+    if ((uintptr_t)s2end > (uintptr_t)end) s2end = end;
+    for (uint8_t* q = strLea + 7; q + 7 <= s2end; ++q)
+        if ((q[0] == 0x48 || q[0] == 0x49) && q[1] == 0x8D && (q[2] & 0xC0) == 0x80) {
+            uint8_t rm = q[2] & 0x07;
+            if (rm != 4 && rm != 5) {
+                int32_t disp = *(int32_t*)(q + 3);
+                if (disp >= 0x40 && disp <= 0x8000) return (uintptr_t)disp;
+            }
+        }
+    return 0;
+}
+
+// vmwDevIdOff/vmwTitleOff：数据驱动。首个 VideoMainWindow 构造时，手上有 deviceId 的 QString(devidQs)，
+// 拿它的值在 this 里逐 8 字节比对，命中处就是 deviceId 成员偏移；标题是紧邻的下一个 QString(=+8)。
+// 不碰指令编码，不假设寄存器分配。命中才覆盖，读到的都经 SEH+值匹配，安全。
+static bool g_vmwDerived = false;
+static void derive_vmw_off(void* thiz, const void* devidQs) {
+    std::wstring want = read_qstring(devidQs);
+    if (want.empty()) return;
+    for (uintptr_t off = 0x100; off <= 0x400; off += 8)
+        if (read_qstring((char*)thiz + off) == want) {
+            VMW_DEVICE_ID_OFF = off;
+            VMW_TITLE_OFF     = off + 8;
+            g_vmwOffAuto = true;
+            uu_log("vmw offsets auto-derived: devid=+%llu title=+%llu",
+                   (unsigned long long)off, (unsigned long long)(off + 8));
+            return;
+        }
+    uu_log("vmw offsets auto-derive missed, keep table devid=+%llu", (unsigned long long)VMW_DEVICE_ID_OFF);
+}
+
 
 // 取/建会话状态(持 g_smtx)
 static SessState& sessOf(void* ccs) {
@@ -78,39 +170,16 @@ static SessState& sessOf(void* ccs) {
     s.viewOnly   = cfg::g_viewOnly.load();   // 新会话默认值
     s.clipSync   = cfg::g_clipSync.load();
     s.gamepadOff = cfg::g_gamepadOff.load();
-    s.devid       = read_device_id(ccs);       // 用于去重
-    s.name        = s.devid;                    // 回退显示名，随后由窗口标题覆盖
-    s.lastNameTick= 0;
+    s.devid       = read_device_id(ccs);       // 去重 + 反查 VideoMainWindow 标题的 key
     uu_log("session new: ccs=%p devid=%ls viewOnly=%d", ccs, s.devid.c_str(), (int)s.viewOnly);
     return g_sessions.emplace(ccs, std::move(s)).first->second;
 }
 // 输入 hook 用：记录活动会话，返回该会话是否仅浏览。
-// 设备名取自前台窗口标题（UU 把视频窗口标题设成了设备名），每秒最多抓一次。
-// 抓标题不能在持锁时做：同进程窗口的 GetWindowText 会同步发 WM_GETTEXT 回 UI 线程，
-// 持锁期间跑宿主代码有重入死锁风险。所以锁内只标记活动会话，锁外读标题，再短暂回锁写回。
+// (显示名不再靠前台窗口标题猜——见 sessions_snapshot 按 devid 直接读 VideoMainWindow 标题。)
 static bool input_viewOnly(void* ccs) {
-    bool vo, wantName = false;
-    {
-        std::lock_guard<std::mutex> lk(g_smtx);
-        g_activeCCS = ccs;
-        SessState& s = sessOf(ccs);
-        vo = s.viewOnly;
-        DWORD now = GetTickCount();
-        if (now - s.lastNameTick >= 1000) { s.lastNameTick = now; wantName = true; }
-    }
-    if (wantName) {
-        HWND fg = GetForegroundWindow();
-        DWORD pid = 0;
-        if (fg) GetWindowThreadProcessId(fg, &pid);
-        wchar_t t[128];
-        int n = (fg && pid == GetCurrentProcessId()) ? GetWindowTextW(fg, t, 128) : 0;  // 只认本进程窗口
-        if (n > 0) {
-            std::lock_guard<std::mutex> lk(g_smtx);
-            auto it = g_sessions.find(ccs);
-            if (it != g_sessions.end()) it->second.name.assign(t, n);
-        }
-    }
-    return vo;
+    std::lock_guard<std::mutex> lk(g_smtx);
+    g_activeCCS = ccs;
+    return sessOf(ccs).viewOnly;
 }
 static bool active_viewOnly() {
     std::lock_guard<std::mutex> lk(g_smtx);
@@ -248,12 +317,37 @@ static void __fastcall h_gamepadUpdate(void* thiz, void* padState) {
     o_gamepadUpdate(thiz, padState);
 }
 
+// VideoMainWindow 构造函数：每开一个会话视频窗就来一次。构造参数里带 deviceId 和该会话的
+// CCS(shared_ptr)。这里在原函数跑完后按 thiz+偏移读 deviceId，登记 devid -> 本窗口实例，
+// 供托盘快照按 devid 反查窗口标题(=好友名)。标题此刻多半还空，所以快照时才现读，不在这里存。
+static __int64 __fastcall h_vmwCtor(void* thiz, void* devidQs, void* a3, void* sp, int a5, __int64 a6) {
+    __int64 r = o_vmwCtor(thiz, devidQs, a3, sp, a5, a6);
+    if (!g_vmwDerived) { g_vmwDerived = true; derive_vmw_off(thiz, devidQs); }  // 首个窗口时自动定偏移
+    std::wstring devid = read_qstring((char*)thiz + VMW_DEVICE_ID_OFF);
+    if (!devid.empty()) {
+        std::lock_guard<std::mutex> lk(g_smtx);
+        g_devidToVmw[devid] = thiz;
+        uu_log("vmw registered: devid=%ls vmw=%p", devid.c_str(), thiz);
+    }
+    return r;
+}
+
 // 给托盘菜单用，声明在 session.h
 std::vector<SessSnap> sessions_snapshot() {
     std::lock_guard<std::mutex> lk(g_smtx);
     std::vector<SessSnap> v;
     for (auto& kv : g_sessions) {
-        const std::wstring& disp = !kv.second.name.empty() ? kv.second.name : kv.second.devid;
+        std::wstring disp = kv.second.devid;   // 回退显示名：deviceId
+        auto it = g_devidToVmw.find(kv.second.devid);
+        if (!kv.second.devid.empty() && it != g_devidToVmw.end()) {
+            void* vmw = it->second;
+            // 重新核对该窗口当前的 deviceId：对得上才是本会话活着的窗口(挡悬空/复用)。
+            std::wstring vd = read_qstring((char*)vmw + VMW_DEVICE_ID_OFF);
+            if (vd == kv.second.devid) {
+                std::wstring title = read_qstring((char*)vmw + VMW_TITLE_OFF);
+                if (!title.empty()) disp = title;
+            }
+        }
         v.push_back({ kv.first, disp, kv.second.viewOnly, kv.second.clipSync, kv.second.gamepadOff });
     }
     return v;
@@ -282,10 +376,15 @@ static fn4_t o_setConnInfo = nullptr, o_closeConn = nullptr, o_exitRoom = nullpt
 
 static void session_remove(void* ccs) {
     std::lock_guard<std::mutex> lk(g_smtx);
-    if (g_sessions.erase(ccs)) uu_log("session remove: ccs=%p", ccs);
+    auto it = g_sessions.find(ccs);
+    if (it != g_sessions.end()) {
+        if (!it->second.devid.empty()) g_devidToVmw.erase(it->second.devid);   // 摘掉该会话的窗口映射
+        g_sessions.erase(it);
+        uu_log("session remove: ccs=%p", ccs);
+    }
     if (g_activeCCS == ccs) g_activeCCS = nullptr;
-    for (auto it = g_clipToCcs.begin(); it != g_clipToCcs.end(); )   // 解绑该会话的 Clipboard 实例
-        it = (it->second == ccs) ? g_clipToCcs.erase(it) : std::next(it);
+    for (auto jt = g_clipToCcs.begin(); jt != g_clipToCcs.end(); )   // 解绑该会话的 Clipboard 实例
+        jt = (jt->second == ccs) ? g_clipToCcs.erase(jt) : std::next(jt);
 }
 static __int64 __fastcall h_setConnInfo(void* ccs, void* a2, void* a3, void* a4) {
     {
@@ -363,9 +462,20 @@ void install_hooks(uintptr_t base) {
     g_gvBase = base;
     g_gvVersion = vs.empty() ? L"?" : vs;
     CCS_DEVICE_ID_OFF = V.deviceIdOff;
+    VMW_DEVICE_ID_OFF = V.vmwDevIdOff;
+    VMW_TITLE_OFF     = V.vmwTitleOff;
     uu_log("GameViewer version=%ls known=%d", vs.empty() ? L"?" : vs.c_str(), (int)g_verKnown);
     resolver::ModRange r{};
     resolver::get_ranges((HMODULE)base, r);
+    // device_id 成员偏移：优先从 setConnectInfo 指令里自动抠(抗更新)，抠不到才用版本表
+    {
+        uintptr_t scfn = (g_verKnown && V.setConnInfo.rva) ? base + V.setConnInfo.rva
+            : resolver::find_func(r, {"ControlConnectionSession::setConnectInfo", "startConnectOtherDevice, device_id: "});
+        uintptr_t d = derive_off_after_str(r, scfn, "startConnectOtherDevice, device_id: ");
+        if (d) { CCS_DEVICE_ID_OFF = d; g_devIdAuto = true; }
+        uu_log("deviceIdOff: table=%llu derived=%llu use=%llu", (unsigned long long)V.deviceIdOff,
+               (unsigned long long)d, (unsigned long long)CCS_DEVICE_ID_OFF);
+    }
     mk(r, base, {"ControlConnectionSession::sendMouseEvent", "[control] mouseObj size 0"},      V.sendMouse,    (void*)h_sendMouse, (void**)&o_sendMouse, "sendMouseEvent");
     mk(r, base, {"ControlConnectionSession::sendMouseWheel", "sendMouseWheel failed, session_config_ handle invalid"}, V.sendWheel, (void*)h_sendWheel, (void**)&o_sendWheel, "sendMouseWheel");
     mk(r, base, {"ControlConnectionSession::sendKeyboardEvent"}, V.sendKey, (void*)h_sendKey,   (void**)&o_sendKey,   "sendKeyboardEvent");
@@ -382,6 +492,8 @@ void install_hooks(uintptr_t base) {
     mk(r, base, {"ControlConnectionSession::setConnectInfo", "startConnectOtherDevice, device_id: "}, V.setConnInfo, (void*)h_setConnInfo, (void**)&o_setConnInfo, "setConnectInfo");
     mk(r, base, {"ControlConnectionSession::closeControlConnect"}, V.closeConn, (void*)h_closeConn,   (void**)&o_closeConn,   "closeControlConnect");
     mk(r, base, {"ControlConnectionSession::exitRoom"},            V.exitRoom,  (void*)h_exitRoom,    (void**)&o_exitRoom,    "exitRoom");
+    // 视频窗构造：登记 deviceId -> 窗口，供托盘取好友名(标题)
+    mk(r, base, {"home_control_session_start: window_created, device_id="}, V.vmwCtor, (void*)h_vmwCtor, (void**)&o_vmwCtor, "VideoMainWindow::ctor");
     // 光标
     mk(r, base, {"VideoUi::VideoWidget::updateCursor", "set cursor by id", "Default set arrow cursor"}, V.updateCursor, (void*)h_updateCursor, (void**)&o_updateCursor, "updateCursor");
     uu_log("install_hooks done");
@@ -393,6 +505,11 @@ DebugInfo debug_snapshot() {
     d.gvVersion = g_gvVersion;
     d.gvKnown = g_verKnown;
     d.gvBase = g_gvBase;
+    d.devIdOff = CCS_DEVICE_ID_OFF;
+    d.vmwDevIdOff = VMW_DEVICE_ID_OFF;
+    d.vmwTitleOff = VMW_TITLE_OFF;
+    d.devIdAuto = g_devIdAuto;
+    d.vmwAuto = g_vmwOffAuto;
     d.hooks = g_hookStats;
     return d;
 }

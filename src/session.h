@@ -17,6 +17,8 @@ struct DebugInfo {
     std::wstring gvVersion;     // GameViewer.exe 版本，取不到为 "?"
     bool gvKnown;              // 版本号是否在 offsets 表里
     uintptr_t gvBase;         // GameViewer.exe 模块基址，算 RVA 用
+    uintptr_t devIdOff, vmwDevIdOff, vmwTitleOff;  // 实际生效的结构体偏移
+    bool devIdAuto, vmwAuto;   // 是否运行时自动推导(而非套版本表)
     std::vector<HookStat> hooks;
 };
 DebugInfo debug_snapshot();
