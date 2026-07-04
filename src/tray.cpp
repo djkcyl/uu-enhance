@@ -8,10 +8,14 @@
 #include "config.h"
 #include "log.h"
 #include "session.h"
+#include "update.h"
 
-#define WM_TRAY (WM_APP + 17)
+#define WM_TRAY         (WM_APP + 17)
+#define WM_UPDATE_FOUND (WM_APP + 18)
 // cmd = ID_SESS_BASE + sessionIndex*10 + field
-enum { ID_GITHUB = 1, ID_CTRL_CLIP = 2, ID_SRV_VIEWONLY = 3, ID_SRV_FEAT_BASE = 100, ID_SESS_BASE = 2000 };
+enum { ID_GITHUB = 1, ID_CTRL_CLIP = 2, ID_SRV_VIEWONLY = 3,
+       ID_UPDATE_DL = 4, ID_UPDATE_NOW = 5, ID_AUTO_UPDATE = 6,
+       ID_SRV_FEAT_BASE = 100, ID_SESS_BASE = 2000 };
 
 struct SrvFeatItem { cfg::SrvFeat bit; const wchar_t* name; };
 static const SrvFeatItem kSrvFeats[] = {
@@ -109,6 +113,14 @@ static void show_menu(HWND hwnd) {
         AppendMenuW(m, MF_POPUP, (UINT_PTR)sub, L"调试信息");
     }
 
+    if (update::available()) {
+        wchar_t l[128];
+        swprintf_s(l, L"发现新版本 v%ls（前往下载）", update::latest_version().c_str());
+        AppendMenuW(m, MF_STRING, ID_UPDATE_DL, l);
+    }
+    AppendMenuW(m, MF_STRING, ID_UPDATE_NOW, L"立即检查更新");
+    AppendMenuW(m, MF_STRING | (cfg::g_autoUpdate.load() ? MF_CHECKED : 0),
+                ID_AUTO_UPDATE, L"自动检查更新");
     AppendMenuW(m, MF_STRING, ID_GITHUB, L"项目主页 (GitHub)");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING | MF_GRAYED, 0, L"UU远程增强 v" UURE_VERSION_W);
@@ -119,6 +131,14 @@ static void show_menu(HWND hwnd) {
 
     if (cmd == ID_GITHUB) {
         ShellExecuteW(nullptr, L"open", UURE_GITHUB_W, nullptr, nullptr, SW_SHOWNORMAL);
+    } else if (cmd == ID_UPDATE_DL) {
+        ShellExecuteW(nullptr, L"open", UURE_GITHUB_W L"/releases/latest", nullptr, nullptr, SW_SHOWNORMAL);
+    } else if (cmd == ID_UPDATE_NOW) {
+        update::check_async();
+    } else if (cmd == ID_AUTO_UPDATE) {
+        cfg::g_autoUpdate = !cfg::g_autoUpdate.load();
+        cfg::save();
+        if (cfg::g_autoUpdate.load()) update::check_async();
     } else if (cmd == ID_CTRL_CLIP) {
         cfg::g_ctrlClip = !cfg::g_ctrlClip.load();
         cfg::save();
@@ -138,6 +158,18 @@ static void show_menu(HWND hwnd) {
 static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM w, LPARAM l) {
     if (msg == WM_TRAY) {
         if (l == WM_RBUTTONUP || l == WM_LBUTTONUP || l == WM_CONTEXTMENU) show_menu(h);
+        else if (l == NIN_BALLOONUSERCLICK && update::available())
+            ShellExecuteW(nullptr, L"open", UURE_GITHUB_W L"/releases/latest", nullptr, nullptr, SW_SHOWNORMAL);
+        return 0;
+    }
+    if (msg == WM_UPDATE_FOUND) {
+        std::wstring v = update::latest_version();
+        g_nid.uFlags = NIF_INFO;
+        wcscpy_s(g_nid.szInfoTitle, L"UU远程增强 · 有新版本");
+        swprintf_s(g_nid.szInfo, L"发现新版本 v%ls，点此前往下载；或右键图标 → 更新。", v.c_str());
+        g_nid.dwInfoFlags = NIIF_INFO;
+        Shell_NotifyIconW(NIM_MODIFY, &g_nid);
+        g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         return 0;
     }
     return DefWindowProcW(h, msg, w, l);
@@ -245,6 +277,8 @@ static DWORD WINAPI tray_thread(LPVOID) {
     Shell_NotifyIconW(NIM_MODIFY, &g_nid);
     g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     uu_log("tray icon added");
+
+    update::start(g_wnd, WM_UPDATE_FOUND);
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) { TranslateMessage(&msg); DispatchMessageW(&msg); }

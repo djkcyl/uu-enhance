@@ -26,6 +26,7 @@ add_library(uu_version SHARED
     src/resolver.cpp
     src/hookset.cpp
     src/tray.cpp
+    src/update.cpp
     src/app.rc
     # MinHook
     ${MINHOOK_DIR}/src/buffer.c
@@ -45,7 +46,7 @@ set_target_properties(uu_version PROPERTIES
     PREFIX ""
 )
 
-target_link_libraries(uu_version PRIVATE user32 shell32 advapi32)
+target_link_libraries(uu_version PRIVATE user32 shell32 advapi32 winhttp)
 
 # ---------------------------------------------------------------------------
 # 一键安装器 (uu-enhance-installer.exe)

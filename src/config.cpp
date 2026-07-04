@@ -10,6 +10,7 @@ namespace cfg {
     std::atomic<bool> g_ctrlClip{true};
     std::atomic<bool> g_srvViewOnly{false};
     std::atomic<uint32_t> g_srvBlockMask{SF_ALL};
+    std::atomic<bool> g_autoUpdate{true};
 
     static std::wstring iniDir() {
         wchar_t buf[MAX_PATH]{};
@@ -30,6 +31,7 @@ namespace cfg {
         g_ctrlClip = GetPrivateProfileIntW(L"general", L"controlled_clipboard", 1, p.c_str()) != 0;
         g_srvViewOnly = GetPrivateProfileIntW(L"general", L"controlled_view_only", 0, p.c_str()) != 0;
         g_srvBlockMask = (uint32_t)GetPrivateProfileIntW(L"general", L"controlled_block_mask", SF_ALL, p.c_str()) & SF_ALL;
+        g_autoUpdate = GetPrivateProfileIntW(L"general", L"auto_update_check", 1, p.c_str()) != 0;
     }
 
     void save() {
@@ -44,6 +46,7 @@ namespace cfg {
         WritePrivateProfileStringW(L"general", L"controlled_view_only", g_srvViewOnly ? L"1" : L"0", p.c_str());
         WritePrivateProfileStringW(L"general", L"controlled_block_mask",
                                    std::to_wstring(g_srvBlockMask.load()).c_str(), p.c_str());
+        WritePrivateProfileStringW(L"general", L"auto_update_check", g_autoUpdate ? L"1" : L"0", p.c_str());
     }
 
     void refresh_srv_view_only() {

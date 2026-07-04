@@ -131,6 +131,24 @@ static uintptr_t derive_off_after_str(const resolver::ModRange& r, uintptr_t fun
     return 0;
 }
 
+// handleKeyEvent 内定位 sub_1406A8120(普通键转发+置消费)：两分支各调一次，均为
+// lea rcx,[rsp+disp8];call，取出现两次的目标(disp8 形式避开日志缓冲区的 disp32 call)。
+static void* find_raw_key_forward(const resolver::ModRange& r, uintptr_t hke) {
+    if (!hke) return nullptr;
+    uint8_t* p0 = (uint8_t*)hke;
+    uint8_t* end = p0 + 0x680;
+    if ((uintptr_t)end > r.text_end) end = (uint8_t*)r.text_end;
+    std::map<uintptr_t, int> tally;
+    for (uint8_t* q = p0; q + 10 <= end; ++q)
+        if (q[0] == 0x48 && q[1] == 0x8D && q[2] == 0x4C && q[3] == 0x24 && q[5] == 0xE8) {
+            uintptr_t tgt = (uintptr_t)(q + 10) + *(int32_t*)(q + 6);
+            if (tgt >= r.text_beg && tgt < r.text_end) tally[tgt]++;
+        }
+    uintptr_t best = 0; int bestc = 0;
+    for (auto& kv : tally) if (kv.second > bestc) { best = kv.first; bestc = kv.second; }
+    return bestc >= 2 ? (void*)best : nullptr;
+}
+
 static bool g_vmwDerived = false;
 static void derive_vmw_off(void* thiz, const void* devidQs) {
     std::wstring want = read_qstring(devidQs);
@@ -208,8 +226,20 @@ static void* __fastcall h_sendKey(void* a1, void* a2, void* a3, void* a4, void* 
     return o_sendKey(a1, a2, a3, a4, a5, a6, a7, a8);
 }
 static void __fastcall h_enableCapture(void* thiz, unsigned __int8 enable, char toast, char a4) {
-    if (active_viewOnly() || cfg::srv_block(cfg::SF_INPUT)) enable = 0;   // 仅浏览：不进捕获(不 ClipCursor/SetCursorPos)
+    if (active_viewOnly()) enable = 0;   // 仅浏览：不进捕获
     o_enableCapture(thiz, enable, toast, a4);
+}
+
+// sub_1406A8120：handleKeyEvent 里普通键"转发+置消费"的分支，ctx[4] 是消费标志。
+// 仅浏览时置 0 且不转发 → 键落回本机 OS(Alt+Tab 生效)；UU 快捷键不经此，不受影响。
+using fn_rawfwd_t = void*(__fastcall*)(void**, void*, void*, void*);
+static fn_rawfwd_t o_rawKeyForward = nullptr;
+static void* __fastcall h_rawKeyForward(void** ctx, void* a2, void* a3, void* a4) {
+    if (active_viewOnly()) {
+        if (ctx) { auto* consume = (unsigned char*)ctx[4]; if (consume) *consume = 0; }
+        return ctx ? (void*)ctx[4] : nullptr;
+    }
+    return o_rawKeyForward(ctx, a2, a3, a4);
 }
 
 static void __fastcall h_clipUpdate(void* thiz) {
@@ -365,7 +395,7 @@ static __int64 __fastcall h_exitRoom(void* ccs, void* a2, void* a3, void* a4) {
 using fn_curs_t = __int64(__fastcall*)(void*, unsigned int);
 static fn_curs_t o_updateCursor = nullptr;
 static __int64 __fastcall h_updateCursor(void* vw, unsigned int force) {
-    if (active_viewOnly() || cfg::srv_block(cfg::SF_INPUT)) {
+    if (active_viewOnly()) {
         SetCursor(LoadCursorW(nullptr, (LPCWSTR)IDC_NO));
         return 1;
     }
@@ -376,7 +406,7 @@ static __int64 __fastcall h_updateCursor(void* vw, unsigned int force) {
 using fn_clip_t = BOOL(WINAPI*)(const RECT*);
 static fn_clip_t o_ClipCursor = nullptr;
 static BOOL WINAPI h_ClipCursor(const RECT* rc) {
-    if (rc && (active_viewOnly() || cfg::srv_block(cfg::SF_INPUT))) return o_ClipCursor(nullptr);
+    if (rc && active_viewOnly()) return o_ClipCursor(nullptr);
     return o_ClipCursor(rc);
 }
 
@@ -442,6 +472,12 @@ void install_hooks(uintptr_t base) {
     hookset::install(r, kHooks, (int)(sizeof(kHooks) / sizeof(kHooks[0])), rec);
     hookset::install_export(L"user32.dll", "LockWorkStation", (void*)h_lockWorkStation, (void**)&o_lockWorkStation, rec);
     hookset::install_export(L"user32.dll", "ClipCursor", (void*)h_ClipCursor, (void**)&o_ClipCursor, rec);
+    {
+        uintptr_t hke = resolver::find_func(r, { "VideoUi::VideoWidget::handleKeyEvent",
+                                                 "handleKeyEvent: controller shortcut handled" });
+        void* fwd = find_raw_key_forward(r, hke);
+        hookset::install_at(fwd, "rawKeyForward", "str", (void*)h_rawKeyForward, (void**)&o_rawKeyForward, rec);
+    }
     uu_log("install_hooks done");
 }
 

@@ -9,6 +9,7 @@ namespace cfg {
     extern std::atomic<bool> g_gamepadOff;
     extern std::atomic<bool> g_ctrlClip;
     extern std::atomic<bool> g_srvViewOnly;
+    extern std::atomic<bool> g_autoUpdate;
 
     // Per-category blocking inside controlled view-only. Bit set = block that category.
     enum SrvFeat : uint32_t {

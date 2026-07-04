@@ -16,6 +16,14 @@ bool install_export(const wchar_t* moduleName, const char* proc, void* detour, v
     return ok;
 }
 
+bool install_at(void* target, const char* name, const char* how, void* detour, void** orig, IRecorder& rec) {
+    bool ok = target && MH_CreateHook(target, detour, orig) == MH_OK && MH_EnableHook(target) == MH_OK;
+    if (ok) uu_log("hooked %s @ %p (%s)", name, target, how);
+    else    uu_log("hook %s failed (%s)", name, how);
+    rec.record(name, target, how, ok);
+    return ok;
+}
+
 int install(const resolver::ModRange& r, const Hook* hooks, int count, IRecorder& rec) {
     int ok = 0;
     for (int i = 0; i < count; ++i) {
