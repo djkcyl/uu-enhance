@@ -32,7 +32,6 @@ bool get_ranges(HMODULE mod, ModRange& out) {
     return out.text_beg && out.rdata_beg;
 }
 
-// .pdata(RUNTIME_FUNCTION[]，按 BeginAddress 升序) 把代码地址确定性映射到函数入口
 static uintptr_t func_start_via_pdata(const ModRange& r, uintptr_t code_ea) {
     if (!r.pdata_beg) return 0;
     uint32_t rva = (uint32_t)(code_ea - r.img_beg);
@@ -48,8 +47,6 @@ static uintptr_t func_start_via_pdata(const ModRange& r, uintptr_t code_ea) {
     return 0;
 }
 
-// 一次性索引：.text 中所有"指向 .rdata 的 RIP-lea" → 其所属函数入口。
-// 键=被引用字符串地址(VA)，值=该地址被各函数引用的 lea 次数。
 static uintptr_t g_indexedBase = 0;
 static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t, int>> g_idx;
 
@@ -71,7 +68,6 @@ static void build_index(const ModRange& r) {
     uu_log("resolver index built: %zu string-refs", g_idx.size());
 }
 
-// 找完整字符串的所有出现位置(.rdata)。要求匹配后紧跟 \0，避免把某串当成更长串的前缀重复计票。
 static void find_str_addrs(const ModRange& r, const char* s, std::vector<uintptr_t>& out) {
     size_t n = std::strlen(s);
     if (!n) return;
@@ -83,14 +79,15 @@ static void find_str_addrs(const ModRange& r, const char* s, std::vector<uintptr
         }
 }
 
-uintptr_t find_func(const ModRange& r, std::initializer_list<const char*> anchors) {
+uintptr_t find_func(const ModRange& r, const char* const* anchors, int n) {
     build_index(r);
-    std::unordered_map<uintptr_t, int> votes;  // func -> 命中的锚点数
-    std::unordered_map<uintptr_t, int> leas;   // func -> 总 lea 次数(用于平票)
-    for (const char* a : anchors) {
+    std::unordered_map<uintptr_t, int> votes;
+    std::unordered_map<uintptr_t, int> leas;
+    for (int i = 0; i < n; ++i) {
+        const char* a = anchors[i];
         std::vector<uintptr_t> sva;
         find_str_addrs(r, a, sva);
-        std::unordered_map<uintptr_t, int> thisAnchor;  // 本锚点命中的函数
+        std::unordered_map<uintptr_t, int> thisAnchor;
         for (uintptr_t s : sva) {
             auto it = g_idx.find(s);
             if (it == g_idx.end()) continue;
@@ -103,8 +100,12 @@ uintptr_t find_func(const ModRange& r, std::initializer_list<const char*> anchor
         int lc = leas[v.first];
         if (v.second > bv || (v.second == bv && lc > bl)) { best = v.first; bv = v.second; bl = lc; }
     }
-    if (!best) uu_log("resolve: no anchor matched (first=%s)", anchors.size() ? *anchors.begin() : "?");
+    if (!best) uu_log("resolve: no anchor matched (first=%s)", n ? anchors[0] : "?");
     return best;
+}
+
+uintptr_t find_func(const ModRange& r, std::initializer_list<const char*> anchors) {
+    return find_func(r, anchors.begin(), (int)anchors.size());
 }
 
 uintptr_t find_func_by_logstr(const ModRange& r, const char* logstr) {
@@ -117,29 +118,31 @@ uintptr_t find_string(const ModRange& r, const char* s) {
     return v.empty() ? 0 : v.front();
 }
 
-uintptr_t find_func_by_aob(const ModRange& r, const char* pattern) {
-    if (!pattern || !*pattern) return 0;
-    std::vector<uint8_t> bytes; std::vector<bool> wild;
-    for (const char* p = pattern; *p; ) {
-        if (*p == ' ') { ++p; continue; }
-        if (p[0] == '?') { wild.push_back(true); bytes.push_back(0); p += (p[1] == '?') ? 2 : 1; }
-        else {
-            auto hex = [](char c)->int { return (c>='0'&&c<='9')?c-'0':(c>='A'&&c<='F')?c-'A'+10:(c>='a'&&c<='f')?c-'a'+10:-1; };
-            int hi = hex(p[0]), lo = (p[1]?hex(p[1]):-1);
-            if (hi < 0 || lo < 0) { uu_log("aob pattern malformed, ignored"); return 0; }
-            wild.push_back(false); bytes.push_back((uint8_t)(hi*16+lo)); p += 2;
+static void find_wstr_addrs(const ModRange& r, const wchar_t* s, std::vector<uintptr_t>& out) {
+    size_t n = 0; while (s[n]) ++n;
+    if (!n) return;
+    size_t bytes = n * sizeof(wchar_t);
+    uint8_t first = (uint8_t)(uint16_t)s[0];
+    for (uint8_t* p = (uint8_t*)r.rdata_beg; p + bytes + 2 <= (uint8_t*)r.rdata_end; ++p)
+        if (*p == first && !std::memcmp(p, s, bytes) && p[bytes] == 0 && p[bytes + 1] == 0) {
+            out.push_back((uintptr_t)p);
+            if (out.size() >= 64) return;
         }
-    }
-    size_t m = bytes.size();
-    if (m < 8) return 0;
-    auto t0 = (uint8_t*)r.text_beg, t1 = (uint8_t*)r.text_end;
-    uintptr_t found = 0; int cnt = 0;
-    for (uint8_t* p = t0; p + m <= t1; ++p) {
-        size_t j = 0;
-        for (; j < m; ++j) if (!wild[j] && p[j] != bytes[j]) break;
-        if (j == m) { found = (uintptr_t)p; if (++cnt > 1) return 0; }   // 多于一处匹配则放弃(不可靠)
-    }
-    return cnt == 1 ? found : 0;
 }
 
-} // namespace resolver
+uintptr_t find_func_by_wstr(const ModRange& r, const wchar_t* ws) {
+    build_index(r);
+    std::vector<uintptr_t> sva;
+    find_wstr_addrs(r, ws, sva);
+    std::unordered_map<uintptr_t, int> f;
+    for (uintptr_t s : sva) {
+        auto it = g_idx.find(s);
+        if (it == g_idx.end()) continue;
+        for (auto& fc : it->second) f[fc.first] += fc.second;
+    }
+    uintptr_t best = 0; int bl = 0;
+    for (auto& fc : f) if (fc.second > bl) { best = fc.first; bl = fc.second; }
+    return best;
+}
+
+}

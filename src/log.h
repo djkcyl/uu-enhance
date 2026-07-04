@@ -13,5 +13,5 @@ inline void uu_log(const char* fmt, ...) {
     std::vsnprintf(buf + n, sizeof(buf) - n - 2, fmt, ap);
     va_end(ap);
     std::strcat(buf, "\n");
-    OutputDebugStringA(buf);  // DebugView 里看
+    OutputDebugStringA(buf);  // view in DebugView
 }

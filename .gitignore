@@ -6,6 +6,7 @@
 
 # 本地配置
 .mcp.json
+.claude/
 
 # IDA 数据库
 *.i64

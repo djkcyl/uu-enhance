@@ -10,14 +10,21 @@ add_compile_options(/utf-8)
 # 静态链接 CRT，使产物为零依赖的 drop-in
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
 
+# 从 app.h 取版本号(唯一定义处)，用于安装器产物名
+file(READ ${CMAKE_SOURCE_DIR}/src/app.h _APP_H)
+string(REGEX MATCH "UURE_VERSION[ \t]+\"([^\"]+)\"" _ "${_APP_H}")
+set(UURE_VER "${CMAKE_MATCH_1}")
+
 set(MINHOOK_DIR ${CMAKE_SOURCE_DIR}/vendor/minhook)
 
 add_library(uu_version SHARED
     src/dllmain.cpp
     src/proxy.cpp
     src/hooks.cpp
+    src/server.cpp
     src/config.cpp
     src/resolver.cpp
+    src/hookset.cpp
     src/tray.cpp
     src/app.rc
     # MinHook
@@ -38,7 +45,7 @@ set_target_properties(uu_version PROPERTIES
     PREFIX ""
 )
 
-target_link_libraries(uu_version PRIVATE user32 shell32)
+target_link_libraries(uu_version PRIVATE user32 shell32 advapi32)
 
 # ---------------------------------------------------------------------------
 # 一键安装器 (uu-enhance-installer.exe)
@@ -67,8 +74,19 @@ add_dependencies(uu_installer uu_payload)
 # rc 在 PAYLOAD_DIR 里找 version.dll; src 里找 app.h(共用版本号/GitHub)
 target_include_directories(uu_installer PRIVATE ${PAYLOAD_DIR} src)
 
-set_target_properties(uu_installer PROPERTIES OUTPUT_NAME "uu-enhance-installer")
+set_target_properties(uu_installer PROPERTIES OUTPUT_NAME "uu-enhance-installer-${UURE_VER}")
 target_link_libraries(uu_installer PRIVATE
-    user32 shell32 ole32 advapi32 comctl32 version winhttp)
+    user32 shell32 ole32 advapi32 comctl32 version winhttp rstrtmgr)
 # 我们在 installer.rc 里自带 manifest(申请管理员权限), 关掉链接器默认生成的那个避免冲突
 target_link_options(uu_installer PRIVATE /MANIFEST:NO)
+
+# UPX 最大压缩安装器(装了 upx 才压, 没有则跳过, 不阻断构建)
+find_program(UPX_EXE upx)
+if(UPX_EXE)
+    add_custom_command(TARGET uu_installer POST_BUILD
+        COMMAND ${UPX_EXE} --brute --best "$<TARGET_FILE:uu_installer>"
+        COMMENT "UPX 压缩安装器"
+        VERBATIM)
+else()
+    message(STATUS "未找到 upx, 跳过安装器压缩")
+endif()

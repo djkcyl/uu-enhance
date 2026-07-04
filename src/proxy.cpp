@@ -1,10 +1,7 @@
-// version.dll 代理：把标准导出转发到系统真正的 version.dll。
-// GameViewer 和 Qt 都会用到 version.dll，导入会绑到本 dll，所以这些导出都得有。
 #include <windows.h>
 
 static HMODULE g_real = nullptr;
 
-// 导出名 = 真名（x64 没有 stdcall 修饰）
 #define EXPORT(name) __pragma(comment(linker, "/EXPORT:" #name "=my_" #name))
 
 EXPORT(GetFileVersionInfoA)        EXPORT(GetFileVersionInfoW)
@@ -26,7 +23,6 @@ void proxy_init() {
     g_real = LoadLibraryW(sys);
 }
 
-// 真函数取不到（g_real 没加载，或这个导出在当前系统不存在）时返回失败值，别去 call 空指针。
 #define FWD(ret, fail, name, ptypes, params, args) \
     extern "C" ret WINAPI my_##name params { \
         auto __fp = (ret(WINAPI*)ptypes)R(#name); \

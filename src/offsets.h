@@ -2,70 +2,22 @@
 #include <cstdint>
 #include <cwchar>
 
-// 按版本的地址表。每个目标含写死 RVA + 一段函数开头的字节特征(AOB，rip 相对位移用 ?? 通配)。
-// 定位优先级见 resolver / hooks.cpp：多锚点字符串 → AOB → 这里的 RVA → 跳过。
-// 适配新版本：在 kVer 里加一行即可(RVA 用 IDA 重新核对，AOB 重新抓函数开头字节)。
 namespace ver {
-
-struct Target { uintptr_t rva; const char* aob; };
 
 struct VerSet {
     const wchar_t* version;
-    uintptr_t deviceIdOff;          // CCS 内 device_id std::string 偏移
-    Target sendMouse, sendWheel, sendKey, enableCapture, updateCursor;
-    Target gpConnect, gpDisconnect, gpUpdate;
-    Target clipUpdate, clipFmtList, clipGet, clipSendFmt, clipReq;
-    Target setConnInfo, closeConn, exitRoom;
-    Target vmwCtor;                       // VideoUi::VideoMainWindow 构造函数(每会话一个视频窗)
-    uintptr_t vmwDevIdOff, vmwTitleOff;   // VMW 内 deviceId / 窗口标题(好友名) QString 偏移
+    uintptr_t deviceIdOff;
+    uintptr_t vmwDevIdOff, vmwTitleOff;
 };
 
 inline const VerSet kVer[] = {
-    { L"4.29.0.8620", 4296,
-      /*sendMouse   */ { 0x8BCE10, "48 89 5C 24 10 48 89 74 24 18 48 89 7C 24 20 55 41 54 41 55 41 56 41 57 48 8D AC 24 80 FB FF FF 48 81 EC 80 05 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 70 04 00 00 8B FA 4C 8B F1 45 33 E4 48 8B 81 E0 11 00 00 48 85 C0" },
-      /*sendWheel   */ { 0x8BD950, "48 89 5C 24 18 48 89 74 24 20 55 57 41 54 41 56 41 57 48 8D AC 24 D0 FD FF FF 48 81 EC 30 03 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 20 02 00 00" },
-      /*sendKey     */ { 0x8BB3E0, "48 89 5C 24 20 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 D0 FD FF FF 48 81 EC 30 03 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 20 02 00 00 41 0F B6 F1 41 8B F8 0F B6 DA" },
-      /*enableCap   */ { 0x6AA770, "48 89 5C 24 20 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 40 FD FF FF 48 81 EC C0 03 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 B0 02 00 00 44 88 4C 24 20 45 0F B6 E8" },
-      /*updateCursor*/ { 0x6B49E0, "48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 55 41 54 41 55 41 56 41 57 48 8D 6C 24 90 48 81 EC 70 01 00 00 44 0F B6 F2 48 8B F9 84 D2" },
-      /*gpConnect   */ { 0xA5AA70, "48 89 5C 24 18 48 89 74 24 20 57 48 81 EC 90 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 84 24 88 01 00 00 48 8B FA 48 8B F1 48 81 C1 00 1A 00 00 E8 ?? ?? ?? ?? F0 FF 00" },
-      /*gpDisconnect*/ { 0xA5AF20, "48 89 5C 24 18 48 89 74 24 20 57 48 81 EC 90 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 84 24 88 01 00 00 48 8B FA 48 8B F1 48 81 C1 00 1A 00 00 E8 ?? ?? ?? ?? F0 FF 08" },
-      /*gpUpdate    */ { 0xA5F160, "40 53 48 83 EC 50 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 48 48 8B C2 48 8B D9 FF 05 ?? ?? ?? ?? 48 8D 54 24 28 48 8B C8 E8" },
-      /*clipUpdate  */ { 0x924A30, "48 89 5C 24 10 55 48 8D AC 24 60 FF FF FF 48 81 EC A0 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 90 00 00 00 48 8B D9 C7 44 24 20 01 00 00 00" },
-      /*clipFmtList */ { 0x91A560, "48 89 5C 24 10 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 40 FF FF FF 48 81 EC C0 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 B8 00 00 00" },
-      /*clipGet     */ { 0x91C450, "40 55 53 56 57 41 54 41 56 41 57 48 8D AC 24 C0 FE FF FF 48 81 EC 40 02 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 30 01 00 00 49 8B D8" },
-      /*clipSendFmt */ { 0x91B170, "48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 60 FF FF FF 48 81 EC A0 01 00 00 48 8B F1 45 33 C0 33 D2 48 8D 4C 24 50" },
-      /*clipReq     */ { 0x91EFC0, "40 55 53 56 57 41 56 48 8D AC 24 40 FF FF FF 48 81 EC C0 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 B0 00 00 00 8B F2 48 8B F9 41 8B 40 1C 83 F8 05 75 0E" },
-      /*setConnInfo */ { 0x8C2BB0, "48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 4C 89 74 24 20 55 48 8D 6C 24 90 48 81 EC 70 01 00 00 4C 8B F2 48 8B F1 E8" },
-      /*closeConn   */ { 0x892B70, "48 89 5C 24 08 57 48 81 EC 70 01 00 00 48 8B F9 83 A1 38 12 00 00 FE E8 ?? ?? ?? ?? 48 8B D8 48 8D 05 ?? ?? ?? ?? 48 89 44 24 30 48 C7 44 24 38 2D 00 00 00" },
-      /*exitRoom    */ { 0x89B2E0, "48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 4C 89 74 24 20 55 48 8D 6C 24 90 48 81 EC 70 01 00 00 48 8B D9 E8 ?? ?? ?? ?? 48 8B F8 48 8D 35 ?? ?? ?? ?? 48 89 74 24 30 48 C7 44 24 38 22 00 00 00 4C 8D 35" },
-      /*vmwCtor     */ { 0x661400, "48 89 5C 24 10 48 89 74 24 18 48 89 4C 24 08 55 57 41 54 41 56 41 57 48 8D AC 24 E0 FD FF FF 48 81 EC 20 03 00 00 49 8B D9 49 8B F0 4C 8B FA 48 8B F9 45 33 E4 48 8B 95 78 02 00 00 E8 ?? ?? ?? ?? 90 48 8D 05 ?? ?? ?? ??" },
-      /*vmw offs    */ 344, 352,
-    },
-    { L"4.26.0.8259", 3984,
-      /*sendMouse   */ { 0x862080, "48 89 5C 24 10 48 89 74 24 18 48 89 7C 24 20 55 41 54 41 55 41 56 41 57 48 8D AC 24 80 FB FF FF 48 81 EC 80 05 00 00 48" },
-      /*sendWheel   */ { 0x862bc0, "48 89 5C 24 18 48 89 74 24 20 55 57 41 54 41 56 41 57 48 8D AC 24 D0 FD FF FF 48 81 EC 30 03 00 00 48 8B 05 ?? ?? ?? ??" },
-      /*sendKey     */ { 0x860650, "48 89 5C 24 20 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 D0 FD FF FF 48 81 EC 30 03 00 00 48 8B 05 ?? ?? ?? ?? 48 33" },
-      /*enableCap   */ { 0x6639e0, "48 89 5C 24 20 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 40 FD FF FF 48 81 EC C0 03 00 00 48 8B 05 ?? ?? ?? ?? 48 33" },
-      /*updateCursor*/ { 0x66dba0, "48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 55 41 54 41 55 41 56 41 57 48 8D 6C 24 90 48 81 EC 70 01 00 00 44 0F B6 F2" },
-      /*gpConnect   */ { 0x9ea770, "48 89 5C 24 18 48 89 74 24 20 57 48 81 EC 90 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 84 24 88 01 00 00 48 8B FA 48" },
-      /*gpDisconnect*/ { 0x9eac20, "48 89 5C 24 18 48 89 74 24 20 57 48 81 EC 90 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 84 24 88 01 00 00 48 8B FA 48" },
-      /*gpUpdate    */ { 0x9eeeb0, "40 53 48 83 EC 50 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 48 48 8B C2 48 8B D9 FF 05 ?? ?? ?? ?? 48 8D 54 24 28 48 8B" },
-      /*clipUpdate  */ { 0x8c5280, "48 89 5C 24 10 55 48 8D AC 24 60 FF FF FF 48 81 EC A0 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 90 00 00 00 48 8B" },
-      /*clipFmtList */ { 0x8badb0, "48 89 5C 24 10 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 40 FF FF FF 48 81 EC C0 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 B8 00 00 00" },
-      /*clipGet     */ { 0x8bcca0, "40 55 53 56 57 41 54 41 56 41 57 48 8D AC 24 C0 FE FF FF 48 81 EC 40 02 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 30 01 00 00 49 8B D8 44 8B" },
-      /*clipSendFmt */ { 0x8bb9c0, "48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 60 FF FF FF 48 81 EC A0 01 00 00 48 8B F1 45 33 C0 33 D2 48 8D 4C 24 50 E8 ?? ?? ?? ??" },
-      /*clipReq     */ { 0, "" },   // 4.26 未测；靠字符串锚点定位
-      /*setConnInfo */ { 0x867ce0, "48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 4C 89 74 24 20 55 48 8D 6C 24 90 48 81 EC 70 01 00 00 4C 8B F2 48 8B F1 E8" },
-      /*closeConn   */ { 0x83a3f0, "48 89 5C 24 08 57 48 81 EC 70 01 00 00 48 8B F9 83 A1 00 11 00 00 FE E8 ?? ?? ?? ?? 48 8B D8 48 8D 05 ?? ?? ?? ?? 48 89" },
-      /*exitRoom    */ { 0x841b90, "48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 4C 89 74 24 20 55 48 8D 6C 24 90 48 81 EC 70 01 00 00 48 8B D9 E8 ?? ?? ??" },
-      /*vmwCtor     */ { 0, "" },   // 4.26 未核对；靠字符串锚点定位
-      /*vmw offs    */ 344, 352,    // 未核对(与 4.29 一致的猜测；读错只回退 deviceId)
-    },
+    { L"4.29.0.8620", 4296, 344, 352 },
+    { L"4.26.0.8259", 3984, 344, 352 },   // vmw offsets unverified
 };
 
 inline const VerSet& pick(const wchar_t* v) {
     if (v) for (auto& s : kVer) if (!wcscmp(s.version, v)) return s;
-    return kVer[0];   // 未知版本用基线兜底(RVA 多半不对，但字符串/AOB 会先生效)
+    return kVer[0];
 }
 
-} // namespace ver
+}

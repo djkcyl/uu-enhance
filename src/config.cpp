@@ -1,5 +1,6 @@
 #include "config.h"
 #include <windows.h>
+#include <shlobj.h>
 #include <string>
 
 namespace cfg {
@@ -7,20 +8,18 @@ namespace cfg {
     std::atomic<bool> g_clipSync{false};
     std::atomic<bool> g_gamepadOff{false};
     std::atomic<bool> g_ctrlClip{true};
+    std::atomic<bool> g_srvViewOnly{false};
+    std::atomic<uint32_t> g_srvBlockMask{SF_ALL};
 
-    static std::wstring iniPath() {
+    static std::wstring iniDir() {
         wchar_t buf[MAX_PATH]{};
-        // ini 放在本 DLL 同目录 (GameViewer\bin\uu-enhance.ini)
-        HMODULE self = nullptr;
-        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           (LPCWSTR)&iniPath, &self);
-        GetModuleFileNameW(self, buf, MAX_PATH);
-        std::wstring p(buf);
-        size_t s = p.find_last_of(L"\\/");
-        if (s != std::wstring::npos) p = p.substr(0, s + 1);
-        p += L"uu-enhance.ini";
-        return p;
+        if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_COMMON_APPDATA, nullptr, 0, buf)))
+            return std::wstring(buf) + L"\\uu-enhance";
+        return L"";
+    }
+    static std::wstring iniPath() {
+        std::wstring d = iniDir();
+        return d.empty() ? L"" : d + L"\\uu-enhance.ini";
     }
 
     void load() {
@@ -29,20 +28,36 @@ namespace cfg {
         g_clipSync = GetPrivateProfileIntW(L"general", L"clipboard_sync", 0, p.c_str()) != 0;
         g_gamepadOff = GetPrivateProfileIntW(L"general", L"gamepad_off", 0, p.c_str()) != 0;
         g_ctrlClip = GetPrivateProfileIntW(L"general", L"controlled_clipboard", 1, p.c_str()) != 0;
+        g_srvViewOnly = GetPrivateProfileIntW(L"general", L"controlled_view_only", 0, p.c_str()) != 0;
+        g_srvBlockMask = (uint32_t)GetPrivateProfileIntW(L"general", L"controlled_block_mask", SF_ALL, p.c_str()) & SF_ALL;
     }
 
     void save() {
+        std::wstring d = iniDir();
+        if (!d.empty()) CreateDirectoryW(d.c_str(), nullptr);
         auto p = iniPath();
+        if (p.empty()) return;
         WritePrivateProfileStringW(L"general", L"view_only",      g_viewOnly ? L"1" : L"0", p.c_str());
         WritePrivateProfileStringW(L"general", L"clipboard_sync", g_clipSync ? L"1" : L"0", p.c_str());
         WritePrivateProfileStringW(L"general", L"gamepad_off",    g_gamepadOff ? L"1" : L"0", p.c_str());
         WritePrivateProfileStringW(L"general", L"controlled_clipboard", g_ctrlClip ? L"1" : L"0", p.c_str());
+        WritePrivateProfileStringW(L"general", L"controlled_view_only", g_srvViewOnly ? L"1" : L"0", p.c_str());
+        WritePrivateProfileStringW(L"general", L"controlled_block_mask",
+                                   std::to_wstring(g_srvBlockMask.load()).c_str(), p.c_str());
     }
+
+    void refresh_srv_view_only() {
+        auto p = iniPath();
+        if (p.empty()) return;
+        g_srvViewOnly = GetPrivateProfileIntW(L"general", L"controlled_view_only", 0, p.c_str()) != 0;
+        g_srvBlockMask = (uint32_t)GetPrivateProfileIntW(L"general", L"controlled_block_mask", SF_ALL, p.c_str()) & SF_ALL;
+    }
+
+    std::wstring config_path() { return iniPath(); }
 
     std::wstring exe_version() {
         wchar_t path[MAX_PATH]{};
         if (!GetModuleFileNameW(nullptr, path, MAX_PATH)) return L"";
-        // 动态调用系统 version.dll，避免与我们自己的代理 dll 自引用，也不必链接 version.lib
         wchar_t sys[MAX_PATH]{}; GetSystemDirectoryW(sys, MAX_PATH); wcscat_s(sys, L"\\version.dll");
         HMODULE v = LoadLibraryW(sys);
         if (!v) return L"";

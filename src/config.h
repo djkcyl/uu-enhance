@@ -1,16 +1,38 @@
 #pragma once
 #include <atomic>
+#include <cstdint>
 #include <string>
 
-// 新会话的默认开关，从 ini 读；每个会话连上后可在托盘菜单单独改
 namespace cfg {
-    extern std::atomic<bool> g_viewOnly;     // 仅浏览（主控新会话默认）
-    extern std::atomic<bool> g_clipSync;     // 剪贴板同步（主控新会话默认）
-    extern std::atomic<bool> g_gamepadOff;   // 禁止手柄转发（主控新会话默认）
-    extern std::atomic<bool> g_ctrlClip;     // 被控端剪贴板：允许控制方读/写本机剪贴板（全局，默认开）
+    extern std::atomic<bool> g_viewOnly;
+    extern std::atomic<bool> g_clipSync;
+    extern std::atomic<bool> g_gamepadOff;
+    extern std::atomic<bool> g_ctrlClip;
+    extern std::atomic<bool> g_srvViewOnly;
 
-    void load();   // 从 ini 读取(全局默认值)
+    // Per-category blocking inside controlled view-only. Bit set = block that category.
+    enum SrvFeat : uint32_t {
+        SF_INPUT    = 1u << 0,
+        SF_TERMINAL = 1u << 1,
+        SF_PORTMAP  = 1u << 2,
+        SF_FILE     = 1u << 3,
+        SF_DISPLAY  = 1u << 4,
+        SF_PRIVACY  = 1u << 5,
+        SF_AUDIO    = 1u << 6,
+        SF_POWER    = 1u << 7,
+        SF_LAUNCH   = 1u << 8,
+        SF_VDISPLAY = 1u << 9,
+        SF_TEXT     = 1u << 10,
+        SF_ALL      = (1u << 11) - 1,
+    };
+    extern std::atomic<uint32_t> g_srvBlockMask;
+
+    inline bool srv_block(SrvFeat f) { return g_srvViewOnly.load() && (g_srvBlockMask.load() & f); }
+
+    void load();
     void save();
+    void refresh_srv_view_only();
+    std::wstring config_path();
 
-    std::wstring exe_version();   // 主程序(GameViewer.exe)版本号 "a.b.c.d"，取不到返回空
+    std::wstring exe_version();
 }

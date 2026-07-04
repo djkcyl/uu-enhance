@@ -1,15 +1,17 @@
-// UU远程增强 一键安装器
 #include <windows.h>
 #include <shlobj.h>
 #include <commctrl.h>
 #include <tlhelp32.h>
 #include <winhttp.h>
+#include <RestartManager.h>
 #include <string>
 #include <vector>
 #include "resource.h"
 #include "app.h"
 
-#define WM_UPDATE_AVAILABLE (WM_APP + 100)
+// wParam: 0=已是最新 1=有新版本 2=检查失败
+#define WM_UPDATE_RESULT (WM_APP + 100)
+enum { UPD_LATEST = 0, UPD_AVAILABLE = 1, UPD_FAILED = 2, UPD_CHECKING = 3 };
 
 static constexpr int BANNER_H  = 68;
 static constexpr int MARGIN    = 20;
@@ -99,6 +101,108 @@ static std::wstring runningGameViewerPath() {
 
 static bool isGameViewerRunning() { return !runningGameViewerPath().empty(); }
 
+static std::wstring processNameByPid(DWORD pid) {
+    HANDLE ph = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!ph) return L"";
+    wchar_t buf[MAX_PATH]; DWORD cb = MAX_PATH; std::wstring out;
+    if (QueryFullProcessImageNameW(ph, 0, buf, &cb)) {
+        std::wstring full = buf;
+        size_t s = full.find_last_of(L"\\/");
+        out = (s == std::wstring::npos) ? full : full.substr(s + 1);
+    }
+    CloseHandle(ph);
+    return out;
+}
+
+// Restart Manager 查出正锁着 file 的进程，返回 "进程名 (PID nnn)"。
+static std::vector<std::wstring> lockingProcesses(const std::wstring& file) {
+    std::vector<std::wstring> out;
+    DWORD session = 0; WCHAR key[CCH_RM_SESSION_KEY + 1] = {};
+    if (RmStartSession(&session, 0, key) != ERROR_SUCCESS) return out;
+
+    LPCWSTR files[] = { file.c_str() };
+    if (RmRegisterResources(session, 1, files, 0, nullptr, 0, nullptr) == ERROR_SUCCESS) {
+        UINT need = 0, got = 0; DWORD reason = 0;
+        DWORD r = RmGetList(session, &need, &got, nullptr, &reason);
+        if ((r == ERROR_MORE_DATA || r == ERROR_SUCCESS) && need > 0) {
+            std::vector<RM_PROCESS_INFO> info(need);
+            got = need;
+            if (RmGetList(session, &need, &got, info.data(), &reason) == ERROR_SUCCESS) {
+                for (UINT i = 0; i < got; ++i) {
+                    DWORD pid = info[i].Process.dwProcessId;
+                    std::wstring name = processNameByPid(pid);
+                    if (name.empty()) name = info[i].strAppName[0] ? info[i].strAppName : L"未知进程";
+                    out.push_back(name + L" (PID " + std::to_wstring(pid) + L")");
+                }
+            }
+        }
+    }
+    RmEndSession(session);
+    return out;
+}
+
+// 等价托盘"退出"：GameViewer 的隐藏窗口(STATIC/固定 GUID)收到 11024 才走 quitApplication，
+// 它忽略 WM_CLOSE/WM_QUIT。退出时会自行停掉被控服务。
+static constexpr UINT    GV_QUIT_MSG       = 11024;
+static constexpr wchar_t GV_MSGWIN_TITLE[] = L"CA4BDE8A-7139-44FE-96B2-9CF79E381B20";
+
+static bool g_closedForOp = false;
+
+static void signalGameViewerQuit() {
+    for (HWND h = nullptr; (h = FindWindowExW(nullptr, h, L"STATIC", GV_MSGWIN_TITLE)) != nullptr; )
+        PostMessageW(h, GV_QUIT_MSG, 0, 0);
+}
+
+// 返回 true = 中止操作（用户拒绝，或超时仍被占用）。
+static bool guardOccupied(HWND hwnd, const std::wstring& dll) {
+    if (!fileExists(dll)) return false;
+    std::vector<std::wstring> lockers = lockingProcesses(dll);
+    if (lockers.empty()) return false;
+
+    std::wstring list;
+    for (const auto& p : lockers) list += L"    · " + p + L"\r\n";
+    std::wstring msg = L"version.dll 被以下进程占用：\r\n\r\n" + list + L"\r\n关闭 GameViewer 后继续？";
+    if (MessageBoxW(hwnd, msg.c_str(), L"文件被占用", MB_YESNO | MB_ICONQUESTION) != IDYES)
+        return true;
+
+    logln(L"正在关闭 GameViewer…");
+    signalGameViewerQuit();
+    for (int i = 0; i < 75 && !lockingProcesses(dll).empty(); ++i) Sleep(200);   // 最多等 ~15s
+
+    if (lockingProcesses(dll).empty()) { g_closedForOp = true; return false; }
+    MessageBoxW(hwnd, L"GameViewer 未能退出，请手动完全退出后重试。", L"仍被占用", MB_ICONWARNING);
+    return true;
+}
+
+// 启根目录的启动器 GameViewer.exe(非 bin 主程序)，它会拉起 bin 主程序和被控服务。
+static void launchGameViewer(const std::wstring& bin) {
+    std::wstring root = parentDir(bin);
+    std::wstring exe = joinPath(root, L"GameViewer.exe");
+    if (!fileExists(exe)) { exe = joinPath(bin, L"GameViewer.exe"); root = bin; }
+    if (fileExists(exe)) {
+        ShellExecuteW(nullptr, L"open", exe.c_str(), nullptr, root.c_str(), SW_SHOWNORMAL);
+        logln(L"已启动 GameViewer");
+    }
+}
+
+// 装/卸完让 GameViewer 以新 DLL 运行：
+// - g_closedForOp：为写文件关过它 → 问是否启回来。
+// - 否则它还开着（全新安装没触发占用检测）：新 DLL 要重启才生效 → 问是否现在重启（先关再启）。
+static void offerRestart(HWND hwnd, const std::wstring& bin) {
+    if (g_closedForOp) {
+        g_closedForOp = false;
+        if (MessageBoxW(hwnd, L"重新启动 GameViewer？", L"启动", MB_YESNO | MB_ICONQUESTION) == IDYES)
+            launchGameViewer(bin);
+    } else if (isGameViewerRunning()) {
+        if (MessageBoxW(hwnd, L"补丁需重启 GameViewer 才能生效，现在重启？", L"启动", MB_YESNO | MB_ICONQUESTION) != IDYES)
+            return;
+        logln(L"正在关闭 GameViewer…");
+        signalGameViewerQuit();
+        for (int i = 0; i < 75 && isGameViewerRunning(); ++i) Sleep(200);
+        launchGameViewer(bin);
+    }
+}
+
 static std::wstring fromRegistry() {
     const REGSAM views[] = { KEY_WOW64_64KEY, KEY_WOW64_32KEY };
     const wchar_t* root = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall";
@@ -160,7 +264,6 @@ static std::wstring autoDetect() {
     return L"";
 }
 
-// 返回 -1 / 0 / 1
 static int cmpVer(const std::wstring& a, const std::wstring& b) {
     auto parse = [](const std::wstring& s, int out[4]) {
         out[0] = out[1] = out[2] = out[3] = 0;
@@ -176,25 +279,28 @@ static int cmpVer(const std::wstring& a, const std::wstring& b) {
 }
 
 static DWORD WINAPI checkUpdateThread(LPVOID param) {
+    HWND hwnd = (HWND)param;
+    auto fail = [&] { PostMessageW(hwnd, WM_UPDATE_RESULT, UPD_FAILED, 0); return 0; };
+
     HINTERNET ses = WinHttpOpen(L"uu-enhance-installer/" UURE_VERSION_W,
         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, nullptr, nullptr, 0);
-    if (!ses) return 0;
+    if (!ses) return fail();
     WinHttpSetTimeouts(ses, 5000, 5000, 5000, 5000);
 
     HINTERNET con = WinHttpConnect(ses, L"api.github.com",
         INTERNET_DEFAULT_HTTPS_PORT, 0);
-    if (!con) { WinHttpCloseHandle(ses); return 0; }
+    if (!con) { WinHttpCloseHandle(ses); return fail(); }
 
     HINTERNET req = WinHttpOpenRequest(con, L"GET",
         L"/repos/djkcyl/uu-enhance/releases/latest",
         nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
         WINHTTP_FLAG_SECURE);
-    if (!req) { WinHttpCloseHandle(con); WinHttpCloseHandle(ses); return 0; }
+    if (!req) { WinHttpCloseHandle(con); WinHttpCloseHandle(ses); return fail(); }
 
     if (!WinHttpSendRequest(req, nullptr, 0, nullptr, 0, 0, 0) ||
         !WinHttpReceiveResponse(req, nullptr)) {
         WinHttpCloseHandle(req); WinHttpCloseHandle(con); WinHttpCloseHandle(ses);
-        return 0;
+        return fail();
     }
 
     std::string body;
@@ -204,20 +310,35 @@ static DWORD WINAPI checkUpdateThread(LPVOID param) {
     WinHttpCloseHandle(req); WinHttpCloseHandle(con); WinHttpCloseHandle(ses);
 
     auto pos = body.find("\"tag_name\"");
-    if (pos == std::string::npos) return 0;
+    if (pos == std::string::npos) return fail();
     pos = body.find('"', pos + 10);
-    if (pos == std::string::npos) return 0;
+    if (pos == std::string::npos) return fail();
     auto end = body.find('"', pos + 1);
-    if (end == std::string::npos) return 0;
+    if (end == std::string::npos) return fail();
     std::string tag(body, pos + 1, end - pos - 1);
     if (!tag.empty() && tag[0] == 'v') tag.erase(0, 1);
 
     std::wstring wtag(tag.begin(), tag.end());
     if (cmpVer(wtag, UURE_VERSION_W) > 0) {
         g_latestVer = wtag;
-        PostMessageW((HWND)param, WM_UPDATE_AVAILABLE, 0, 0);
+        PostMessageW(hwnd, WM_UPDATE_RESULT, UPD_AVAILABLE, 0);
+    } else {
+        PostMessageW(hwnd, WM_UPDATE_RESULT, UPD_LATEST, 0);
     }
     return 0;
+}
+
+static void setFooter(int state) {
+    std::wstring t = L"v" UURE_VERSION_W L"  ·  ";
+    switch (state) {
+    case UPD_LATEST:    t += L"已是最新版本"; break;
+    case UPD_AVAILABLE: t += L"<a href=\"" UURE_GITHUB_W L"/releases/latest\">发现新版本 v"
+                             + g_latestVer + L" ，点此下载</a>"; break;
+    case UPD_FAILED:    t += L"更新检查失败（无网络或接口限流）"; break;
+    default:            t += L"正在检查更新…"; break;
+    }
+    t += L"  ·  <a href=\"" UURE_GITHUB_W L"\">GitHub</a>";
+    SetWindowTextW(g_footer, t.c_str());
 }
 
 static std::wstring currentBinDir() {
@@ -316,14 +437,9 @@ static void doInstall(HWND hwnd) {
         if (r != IDYES) return;
     }
 
-    if (isGameViewerRunning()) {
-        MessageBoxW(hwnd,
-            L"GameViewer 正在运行，DLL 会被占用。\n请先完全退出（含右下角托盘图标）再安装。",
-            L"请先退出 GameViewer", MB_ICONWARNING);
-        return;
-    }
-
     std::wstring dll = joinPath(bin, L"version.dll");
+    if (guardOccupied(hwnd, dll)) return;
+
     if (fileExists(dll) && !isOurDll(dll)) {
         std::wstring bak = dll + L".bak";
         if (!fileExists(bak) && MoveFileW(dll.c_str(), bak.c_str()))
@@ -343,7 +459,7 @@ static void doInstall(HWND hwnd) {
     refreshState();
     if (wasUpdate) {
         MessageBoxW(hwnd,
-            L"更新完成!\n\n下次启动 GameViewer 即生效。",
+            L"更新完成!\n\n启动 GameViewer 即生效。",
             L"更新成功", MB_ICONINFORMATION);
     } else {
         MessageBoxW(hwnd,
@@ -352,6 +468,7 @@ static void doInstall(HWND hwnd) {
             L"右键它就能按会话开关: 仅浏览 / 剪贴板 / 手柄。",
             L"安装成功", MB_ICONINFORMATION);
     }
+    offerRestart(hwnd, bin);
 }
 
 static void doUninstall(HWND hwnd) {
@@ -366,12 +483,7 @@ static void doUninstall(HWND hwnd) {
         refreshState();
         return;
     }
-    if (isGameViewerRunning()) {
-        MessageBoxW(hwnd,
-            L"GameViewer 正在运行，DLL 被占用。\n请先完全退出再卸载。",
-            L"请先退出 GameViewer", MB_ICONWARNING);
-        return;
-    }
+    if (guardOccupied(hwnd, dll)) return;
 
     if (!DeleteFileW(dll.c_str())) {
         logln(L"卸载失败: 无法删除 " + dll);
@@ -390,6 +502,7 @@ static void doUninstall(HWND hwnd) {
 
     refreshState();
     MessageBoxW(hwnd, L"已卸载，GameViewer 已恢复原状。", L"卸载完成", MB_ICONINFORMATION);
+    offerRestart(hwnd, bin);
 }
 
 static void doBrowse(HWND hwnd) {
@@ -480,16 +593,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
                 logln(L"提示: GameViewer 正在运行，操作前请先退出。");
         }
         refreshState();
+        setFooter(UPD_CHECKING);
         CreateThread(nullptr, 0, checkUpdateThread, (LPVOID)hwnd, 0, nullptr);
         return 0;
     }
 
-    case WM_UPDATE_AVAILABLE: {
-        logln(L"安装器有新版本 v" + g_latestVer + L" 可用");
-        std::wstring txt = L"v" UURE_VERSION_W
-            L"  |  <a href=\"" UURE_GITHUB_W L"/releases/latest\">"
-            L"新版本 v" + g_latestVer + L" 可用</a>";
-        SetWindowTextW(g_footer, txt.c_str());
+    case WM_UPDATE_RESULT: {
+        int st = (int)w;
+        if (st == UPD_AVAILABLE) logln(L"发现新版本 v" + g_latestVer + L"，可到 GitHub 下载");
+        setFooter(st);
         return 0;
     }
 
@@ -547,7 +659,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
     case WM_NOTIFY: {
         auto nm = (LPNMHDR)l;
         if (nm->idFrom == ID_LINK && (nm->code == NM_CLICK || nm->code == NM_RETURN)) {
-            ShellExecuteW(nullptr, L"open", UURE_GITHUB_W, nullptr, nullptr, SW_SHOWNORMAL);
+            auto link = (PNMLINK)l;
+            const wchar_t* url = link->item.szUrl[0] ? link->item.szUrl : UURE_GITHUB_W;
+            ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
             return 0;
         }
         break;

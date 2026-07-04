@@ -3,22 +3,21 @@
 #include <string>
 #include <cstdint>
 
-// 会话快照(供托盘菜单)。key = ControlConnectionSession*
 struct SessSnap { void* key; std::wstring name; bool viewOnly, clipSync, gamepadOff; };
 
 std::vector<SessSnap> sessions_snapshot();
-// field: 0=仅浏览 1=剪贴板同步 2=禁止手柄；返回切换后的值
 bool session_toggle(void* key, int field);
 
-// 单个 hook 点的定位结果。how: rva/str/aob，没挂上为空。
 struct HookStat { std::string name; void* addr; std::string how; bool ok; };
-// 调试面板(供托盘“调试信息”子菜单)
+
+struct DbgLine { const wchar_t* role; std::string name; std::string how; unsigned long long off; bool ok; };
+
 struct DebugInfo {
-    std::wstring gvVersion;     // GameViewer.exe 版本，取不到为 "?"
-    bool gvKnown;              // 版本号是否在 offsets 表里
-    uintptr_t gvBase;         // GameViewer.exe 模块基址，算 RVA 用
-    uintptr_t devIdOff, vmwDevIdOff, vmwTitleOff;  // 实际生效的结构体偏移
-    bool devIdAuto, vmwAuto;   // 是否运行时自动推导(而非套版本表)
-    std::vector<HookStat> hooks;
+    std::wstring gvVersion;
+    bool gvKnown;
+    uintptr_t devIdOff, vmwDevIdOff, vmwTitleOff;
+    bool devIdAuto, vmwAuto;
+    bool serverRunning;
+    std::vector<DbgLine> hooks;
 };
 DebugInfo debug_snapshot();

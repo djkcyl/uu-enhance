@@ -38,6 +38,9 @@ jobs:
             exit 1
           }
 
+      - name: 安装 UPX（压缩安装器）
+        run: choco install upx -y
+
       - name: 配置 (CMake + VS2022 x64)
         run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 
@@ -46,11 +49,8 @@ jobs:
 
       - name: 上传产物到 Release
         run: |
-          $files = @(
-            "build/Release/uu-enhance-installer.exe",
-            "build/Release/version.dll"
-          )
-          foreach ($f in $files) {
-            if (-not (Test-Path $f)) { Write-Error "缺少产物 $f"; exit 1 }
-          }
-          gh release upload $env:TAG $files --clobber
+          $exe = Get-ChildItem build/Release/uu-enhance-installer-*.exe | Select-Object -First 1
+          if (-not $exe) { Write-Error "缺少安装器产物"; exit 1 }
+          $dll = "build/Release/version.dll"
+          if (-not (Test-Path $dll)) { Write-Error "缺少产物 $dll"; exit 1 }
+          gh release upload $env:TAG $exe.FullName $dll --clobber

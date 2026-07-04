@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <vector>
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include "app.h"
@@ -9,12 +10,27 @@
 #include "session.h"
 
 #define WM_TRAY (WM_APP + 17)
-// 菜单命令编码：每个会话 3 个开关。cmd = ID_SESS_BASE + sessionIndex*10 + field
-enum { ID_GITHUB = 1, ID_CTRL_CLIP = 2, ID_SESS_BASE = 2000 };
+// cmd = ID_SESS_BASE + sessionIndex*10 + field
+enum { ID_GITHUB = 1, ID_CTRL_CLIP = 2, ID_SRV_VIEWONLY = 3, ID_SRV_FEAT_BASE = 100, ID_SESS_BASE = 2000 };
+
+struct SrvFeatItem { cfg::SrvFeat bit; const wchar_t* name; };
+static const SrvFeatItem kSrvFeats[] = {
+    { cfg::SF_INPUT,    L"输入（鼠标/键盘/手柄）" },
+    { cfg::SF_TERMINAL, L"终端" },
+    { cfg::SF_PORTMAP,  L"端口映射" },
+    { cfg::SF_FILE,     L"文件传输" },
+    { cfg::SF_DISPLAY,  L"改分辨率/DPI/关显示器/翻屏" },
+    { cfg::SF_PRIVACY,  L"隐私屏/锁屏" },
+    { cfg::SF_AUDIO,    L"麦克风/静音" },
+    { cfg::SF_POWER,    L"关机/重启/唤醒/自启" },
+    { cfg::SF_LAUNCH,   L"启动应用" },
+    { cfg::SF_VDISPLAY, L"虚拟屏/超级屏" },
+    { cfg::SF_TEXT,     L"文本注入" },
+};
 
 static HWND  g_wnd = nullptr;
 static NOTIFYICONDATAW g_nid{};
-static std::vector<SessSnap> g_lastSnap;   // 与菜单 index 对应
+static std::vector<SessSnap> g_lastSnap;
 
 static void show_menu(HWND hwnd) {
     POINT pt; GetCursorPos(&pt);
@@ -39,36 +55,57 @@ static void show_menu(HWND hwnd) {
     }
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
 
-    // 被控端全局开关：本机被别人控制时，是否允许对方读/写本机剪贴板
     AppendMenuW(m, MF_STRING | (cfg::g_ctrlClip.load() ? MF_CHECKED : 0), ID_CTRL_CLIP, L"被控时允许剪贴板");
+    AppendMenuW(m, MF_STRING | (cfg::g_srvViewOnly.load() ? MF_CHECKED : 0), ID_SRV_VIEWONLY, L"被控时仅浏览（对方只能看）");
+    {
+        uint32_t mask = cfg::g_srvBlockMask.load();
+        HMENU sub = CreatePopupMenu();
+        for (int i = 0; i < (int)(sizeof(kSrvFeats) / sizeof(kSrvFeats[0])); ++i)
+            AppendMenuW(sub, MF_STRING | ((mask & kSrvFeats[i].bit) ? MF_CHECKED : 0),
+                        ID_SRV_FEAT_BASE + i, kSrvFeats[i].name);
+        AppendMenuW(m, MF_POPUP, (UINT_PTR)sub, L"　└ 仅浏览拦截项（勾=拦）");
+    }
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
 
-    // 调试信息：版本 + 各 hook 点定位情况
     {
         DebugInfo dbg = debug_snapshot();
         HMENU sub = CreatePopupMenu();
-        int okN = 0; for (const auto& h : dbg.hooks) if (h.ok) ++okN;
         wchar_t line[256];
-        swprintf_s(line, L"GameViewer %ls (%ls)", dbg.gvVersion.c_str(), dbg.gvKnown ? L"已识别" : L"未识别");
+        swprintf_s(line, L"GameViewer %ls (%ls)", dbg.gvVersion.c_str(), dbg.gvKnown ? L"known" : L"unknown");
         AppendMenuW(sub, MF_STRING | MF_GRAYED, 0, line);
-        swprintf_s(line, L"已挂 %d/%d 个 hook", okN, (int)dbg.hooks.size());
-        AppendMenuW(sub, MF_STRING | MF_GRAYED, 0, line);
-        swprintf_s(line, L"偏移 dev=%llu(%ls) vmw=%llu/%llu(%ls)",
-                   (unsigned long long)dbg.devIdOff, dbg.devIdAuto ? L"自动" : L"表",
+        swprintf_s(line, L"offsets dev=%llu(%ls) vmw=%llu/%llu(%ls)",
+                   (unsigned long long)dbg.devIdOff, dbg.devIdAuto ? L"auto" : L"table",
                    (unsigned long long)dbg.vmwDevIdOff, (unsigned long long)dbg.vmwTitleOff,
-                   dbg.vmwAuto ? L"自动" : L"表");
+                   dbg.vmwAuto ? L"auto" : L"table");
         AppendMenuW(sub, MF_STRING | MF_GRAYED, 0, line);
         AppendMenuW(sub, MF_SEPARATOR, 0, nullptr);
-        for (const auto& h : dbg.hooks) {
-            if (h.ok)
-                swprintf_s(line, L"%hs  %hs +0x%llX", h.name.c_str(), h.how.c_str(),
-                           (unsigned long long)((uintptr_t)h.addr - dbg.gvBase));
-            else if (h.addr)
-                swprintf_s(line, L"%hs  挂钩失败", h.name.c_str());
-            else
-                swprintf_s(line, L"%hs  未定位(已跳过)", h.name.c_str());
-            AppendMenuW(sub, MF_STRING | MF_GRAYED, 0, line);
-        }
+
+        auto addGroup = [&](const wchar_t* role, const wchar_t* label) {
+            std::vector<const DbgLine*> items;
+            for (const auto& h : dbg.hooks)
+                if (wcscmp(h.role, role) == 0) items.push_back(&h);
+            std::sort(items.begin(), items.end(), [](const DbgLine* a, const DbgLine* b) {
+                if (a->ok != b->ok) return !a->ok;                 // 未定位的排最前
+                if (int c = a->how.compare(b->how)) return c < 0;  // 再按类型(str/exp/aob)分块
+                return _stricmp(a->name.c_str(), b->name.c_str()) < 0;
+            });
+            HMENU g = CreatePopupMenu();
+            int ok = 0;
+            for (const DbgLine* h : items) {
+                if (h->ok) ++ok;
+                if (!h->ok)      swprintf_s(line, L"%hs  not found", h->name.c_str());
+                else if (h->off) swprintf_s(line, L"%hs  %hs +0x%llX", h->name.c_str(), h->how.c_str(), h->off);
+                else             swprintf_s(line, L"%hs  %hs", h->name.c_str(), h->how.c_str());
+                AppendMenuW(g, MF_STRING | MF_GRAYED, 0, line);
+            }
+            wchar_t glabel[64];
+            if (items.empty()) swprintf_s(glabel, L"%ls", label);
+            else               swprintf_s(glabel, L"%ls（%d/%d）", label, ok, (int)items.size());
+            AppendMenuW(sub, MF_POPUP | (items.empty() ? MF_GRAYED : 0), (UINT_PTR)g, glabel);
+        };
+        addGroup(L"ctl", L"主控");
+        addGroup(L"srv", dbg.serverRunning ? L"被控" : L"被控（未运行）");
+
         AppendMenuW(m, MF_POPUP, (UINT_PTR)sub, L"调试信息");
     }
 
@@ -85,6 +122,12 @@ static void show_menu(HWND hwnd) {
     } else if (cmd == ID_CTRL_CLIP) {
         cfg::g_ctrlClip = !cfg::g_ctrlClip.load();
         cfg::save();
+    } else if (cmd == ID_SRV_VIEWONLY) {
+        cfg::g_srvViewOnly = !cfg::g_srvViewOnly.load();
+        cfg::save();
+    } else if (cmd >= ID_SRV_FEAT_BASE && cmd < ID_SRV_FEAT_BASE + (int)(sizeof(kSrvFeats) / sizeof(kSrvFeats[0]))) {
+        cfg::g_srvBlockMask = cfg::g_srvBlockMask.load() ^ kSrvFeats[cmd - ID_SRV_FEAT_BASE].bit;
+        cfg::save();
     } else if (cmd >= ID_SESS_BASE) {
         int idx = (cmd - ID_SESS_BASE) / 10, field = (cmd - ID_SESS_BASE) % 10;
         if (idx >= 0 && idx < (int)g_lastSnap.size() && field >= 0 && field <= 2)
@@ -100,8 +143,6 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM w, LPARAM l) {
     return DefWindowProcW(h, msg, w, l);
 }
 
-// 在基础图标右下角叠加一个小齿轮(Segoe MDL2 Assets U+E713)，区分补丁托盘和 UU 自己的图标。
-// GDI 文字渲染不写 alpha，所以在临时 DIB 上画字形取覆盖范围，再手动合成到主图标。
 static HICON overlayGear(HICON base) {
     int cx = GetSystemMetrics(SM_CXSMICON);
     int cy = GetSystemMetrics(SM_CYSMICON);
@@ -133,14 +174,14 @@ static HICON overlayGear(HICON base) {
     HGDIOBJ oldFont = SelectObject(tmp, font);
     SetBkMode(tmp, TRANSPARENT);
     int ox = cx - gs, oy = cy - gs;
-    wchar_t glyph[] = { 0xE713, 0 };
+    wchar_t glyph[] = { 0xE713, 0 };   // Segoe MDL2 Assets gear
 
     std::memset(tp, 0, n * 4);
     SetTextColor(tmp, RGB(255, 255, 255));
     for (int dx = -1; dx <= 1; dx++)
         for (int dy = -1; dy <= 1; dy++)
             TextOutW(tmp, ox + dx, oy + dy, glyph, 1);
-    GdiFlush();  // 读 DIB 像素前必须刷，否则 GDI 还没把字形写进内存
+    GdiFlush();  // flush before reading DIB pixels
     for (int i = 0; i < n; i++)
         if (tp[i] & 0x00FFFFFF) px[i] = 0xFFFFFFFF;
 
@@ -157,7 +198,7 @@ static HICON overlayGear(HICON base) {
     DeleteObject(tbmp);
     DeleteDC(tmp);
 
-    // mask 全黑，让 alpha 完全由 color bitmap 的 per-pixel alpha 决定
+    // all-black mask: alpha comes from the color bitmap's per-pixel alpha
     HBITMAP mask = CreateBitmap(cx, cy, 1, 1, nullptr);
     HDC mdc = CreateCompatibleDC(screen);
     HGDIOBJ oldM = SelectObject(mdc, mask);
