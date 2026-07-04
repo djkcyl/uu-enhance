@@ -24,6 +24,7 @@ add_library(uu_version SHARED
     src/server.cpp
     src/config.cpp
     src/resolver.cpp
+    src/xdisasm.cpp
     src/hookset.cpp
     src/tray.cpp
     src/update.cpp
@@ -37,6 +38,7 @@ add_library(uu_version SHARED
 
 target_include_directories(uu_version PRIVATE
     ${MINHOOK_DIR}/include
+    ${MINHOOK_DIR}/src/hde   # HDE64 头文件(xdisasm.cpp 复用 MinHook 自带的长度反汇编器)
     src
 )
 

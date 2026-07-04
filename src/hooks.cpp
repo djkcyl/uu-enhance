@@ -11,6 +11,7 @@
 #include "config.h"
 #include "log.h"
 #include "resolver.h"
+#include "xdisasm.h"
 #include "hookset.h"
 #include "session.h"
 #include "srvdbg.h"
@@ -109,41 +110,54 @@ static uintptr_t derive_off_after_str(const resolver::ModRange& r, uintptr_t fun
     if (!func) return 0;
     uintptr_t sa = resolver::find_string(r, anchorStr);
     if (!sa) return 0;
-    uint8_t* p0 = (uint8_t*)func;
-    uint8_t* end = p0 + 0x400;
-    if ((uintptr_t)end > r.text_end) end = (uint8_t*)r.text_end;
-    uint8_t* strLea = nullptr;
-    for (uint8_t* q = p0; q + 7 <= end; ++q)
-        if ((q[0] == 0x48 || q[0] == 0x4C) && q[1] == 0x8D && (q[2] & 0xC7) == 0x05) {
-            if ((uintptr_t)(q + 7) + *(int32_t*)(q + 3) == sa) { strLea = q; break; }
-        }
-    if (!strLea) return 0;
-    uint8_t* s2end = strLea + 0x40;
+    const uint8_t* p0 = (const uint8_t*)func;
+    const uint8_t* end = p0 + 0x400;
+    if ((uintptr_t)end > r.text_end) end = (const uint8_t*)r.text_end;
+    const uint8_t* after = nullptr;
+    for (const uint8_t* q = p0; q < end; ) {
+        xd::Insn i = xd::decode(q);
+        if (!i.len) { ++q; continue; }
+        if (i.opcode == 0x8D && !i.two_byte && i.rip_rel && xd::rip_target(q, i) == sa) { after = q + i.len; break; }
+        q += i.len;
+    }
+    if (!after) return 0;
+    const uint8_t* s2end = after + 0x40;
     if ((uintptr_t)s2end > (uintptr_t)end) s2end = end;
-    for (uint8_t* q = strLea + 7; q + 7 <= s2end; ++q)
-        if ((q[0] == 0x48 || q[0] == 0x49) && q[1] == 0x8D && (q[2] & 0xC0) == 0x80) {
-            uint8_t rm = q[2] & 0x07;
-            if (rm != 4 && rm != 5) {
-                int32_t disp = *(int32_t*)(q + 3);
-                if (disp >= 0x40 && disp <= 0x8000) return (uintptr_t)disp;
-            }
+    for (const uint8_t* q = after; q < s2end; ) {
+        xd::Insn i = xd::decode(q);
+        if (!i.len) { ++q; continue; }
+        if (i.opcode == 0x8D && !i.two_byte && i.has_modrm && i.mod == 2 && i.rm != 4 && i.rm != 5) {
+            int32_t disp = i.disp;
+            if (disp >= 0x40 && disp <= 0x8000) return (uintptr_t)disp;
         }
+        q += i.len;
+    }
     return 0;
 }
 
-// handleKeyEvent 内定位 sub_1406A8120(普通键转发+置消费)：两分支各调一次，均为
-// lea rcx,[rsp+disp8];call，取出现两次的目标(disp8 形式避开日志缓冲区的 disp32 call)。
+// handleKeyEvent 内定位 sub_1406A8120(普通键转发+置消费)：两分支各以
+// lea rcx,[rsp+disp];call 调它一次，取出现≥2 次的 call 目标。
 static void* find_raw_key_forward(const resolver::ModRange& r, uintptr_t hke) {
     if (!hke) return nullptr;
-    uint8_t* p0 = (uint8_t*)hke;
-    uint8_t* end = p0 + 0x680;
-    if ((uintptr_t)end > r.text_end) end = (uint8_t*)r.text_end;
+    const uint8_t* p0 = (const uint8_t*)hke;
+    const uint8_t* end = p0 + 0x680;
+    if ((uintptr_t)end > r.text_end) end = (const uint8_t*)r.text_end;
     std::map<uintptr_t, int> tally;
-    for (uint8_t* q = p0; q + 10 <= end; ++q)
-        if (q[0] == 0x48 && q[1] == 0x8D && q[2] == 0x4C && q[3] == 0x24 && q[5] == 0xE8) {
-            uintptr_t tgt = (uintptr_t)(q + 10) + *(int32_t*)(q + 6);
+    bool argReady = false; int gap = 0;
+    for (const uint8_t* q = p0; q < end; ) {
+        xd::Insn i = xd::decode(q);
+        if (!i.len) { ++q; argReady = false; continue; }
+        bool leaRcxRsp = i.opcode == 0x8D && !i.two_byte && i.has_modrm && i.reg == 1 && !i.rex_r
+                      && !i.rip_rel && i.has_sib && i.sib_base == 4 && i.sib_index == 4 && !i.rex_b && !i.rex_x;
+        if (leaRcxRsp) { argReady = true; gap = 0; }
+        else if (argReady && i.opcode == 0xE8 && !i.two_byte && i.has_rel) {
+            uintptr_t tgt = xd::rel_target(q, i);
             if (tgt >= r.text_beg && tgt < r.text_end) tally[tgt]++;
+            argReady = false;
         }
+        else if (argReady && ++gap > 1) argReady = false;
+        q += i.len;
+    }
     uintptr_t best = 0; int bestc = 0;
     for (auto& kv : tally) if (kv.second > bestc) { best = kv.first; bestc = kv.second; }
     return bestc >= 2 ? (void*)best : nullptr;

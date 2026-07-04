@@ -6,6 +6,7 @@
 #include "config.h"
 #include "log.h"
 #include "resolver.h"
+#include "xdisasm.h"
 #include "hookset.h"
 #include "srvdbg.h"
 #include "prts_cursor.h"
@@ -384,16 +385,29 @@ static char __fastcall h_curState(void* a1, void* state) {
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
     return ok;
 }
-// 在 sendCursorShape 内定位对 sub_1400020A9 的调用：其返回值紧跟 test al,al / jz，字节特征 [E8 rel32][84 C0 0F 84]。
+// 在 sendCursorShape 内定位对 sub_1400020A9 的调用：其返回值紧跟 test al,al / jz。
 static uintptr_t find_cursorstate_fn(const resolver::ModRange& r, uintptr_t send) {
     if (!send) return 0;
-    const uint8_t* p = (const uint8_t*)send;
-    for (int i = 0; i < 0x300; ++i)
-        if (p[i] == 0xE8 && p[i + 5] == 0x84 && p[i + 6] == 0xC0 && p[i + 7] == 0x0F && p[i + 8] == 0x84) {
-            int32_t rel = *(const int32_t*)(p + i + 1);
-            uintptr_t tgt = (uintptr_t)(p + i + 5) + rel;
-            if (tgt >= r.text_beg && tgt < r.text_end) return tgt;
+    const uint8_t* p0 = (const uint8_t*)send;
+    const uint8_t* end = p0 + 0x300;
+    if ((uintptr_t)end > r.text_end) end = (const uint8_t*)r.text_end;
+    uintptr_t call = 0;
+    for (const uint8_t* q = p0; q < end; ) {
+        xd::Insn i = xd::decode(q);
+        if (!i.len) { ++q; call = 0; continue; }
+        if (i.opcode == 0xE8 && !i.two_byte && i.has_rel) {
+            call = xd::rel_target(q, i);
         }
+        else if (call && i.opcode == 0x84 && !i.two_byte && i.has_modrm
+                 && i.mod == 3 && i.reg == 0 && i.rm == 0 && !i.rex_r && !i.rex_b) {   // test al,al
+            xd::Insn j = xd::decode(q + i.len);
+            if (j.len && j.two_byte && j.opcode2 == 0x84                               // jz near
+                && call >= r.text_beg && call < r.text_end) return call;
+            call = 0;
+        }
+        else call = 0;
+        q += i.len;
+    }
     return 0;
 }
 

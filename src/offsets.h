@@ -11,6 +11,7 @@ struct VerSet {
 };
 
 inline const VerSet kVer[] = {
+    { L"4.31.1.8795", 4296, 344, 352 },
     { L"4.29.0.8620", 4296, 344, 352 },
     { L"4.26.0.8259", 3984, 344, 352 },   // vmw offsets unverified
 };
